@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>ManagedLauncher.Plugin</RootNamespace>
+    <AssemblyName>malaunch-plugin</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ManagedLauncher.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ManagedLauncher.Core\ManagedLauncher.Core.csproj" />
+  </ItemGroup>
+
+</Project>

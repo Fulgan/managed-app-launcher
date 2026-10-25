@@ -1,0 +1,117 @@
+{
+  "SDKVersion": 2,
+  "UUID": "com.fulgan.managedapplauncher",
+  "Author": "Fulgan",
+  "Name": "Managed App Launcher",
+  "Description": "App launcher driven by lists you manage: pin apps once, the launcher pages them across your decks. Launches shortcuts, versioned folders or Store apps, shows which are running, long press closes or starts as admin.",
+  "Category": "Managed App Launcher",
+  "CategoryIcon": "imgs/category",
+  "Icon": "imgs/plugin",
+  "Version": "0.1.0.0",
+  "CodePath": "malaunch-plugin.exe",
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "6.4"
+  },
+  "Actions": [
+    {
+      "UUID": "com.fulgan.managedapplauncher.open",
+      "Name": "Open Launcher",
+      "Icon": "imgs/action-open",
+      "Tooltip": "Switches this deck to the Managed App Launcher profile showing the chosen list. The launcher gets a Back key to return here.",
+      "PropertyInspectorPath": "pi/open.html",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/key-open",
+          "TitleAlignment": "bottom",
+          "FontSize": 11
+        }
+      ]
+    },
+    {
+      "UUID": "com.fulgan.managedapplauncher.manage",
+      "Name": "Manage Apps",
+      "Icon": "imgs/action-manage",
+      "Tooltip": "Opens the Managed App Launcher manager to edit your app lists.",
+      "SupportedInMultiActions": false,
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/key-manage",
+          "TitleAlignment": "bottom",
+          "FontSize": 11
+        }
+      ]
+    },
+    {
+      "UUID": "com.fulgan.managedapplauncher.slot",
+      "Name": "App Slot",
+      "Icon": "imgs/action-slot",
+      "Tooltip": "Put on every key of the Managed App Launcher profile. Shows your pinned apps and pages through them; the last key turns into next page when they don't fit.",
+      "PropertyInspectorPath": "pi/slot.html",
+      "SupportedInMultiActions": true,
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/key-slot",
+          "TitleAlignment": "bottom",
+          "FontSize": 11
+        }
+      ]
+    },
+    {
+      "UUID": "com.fulgan.managedapplauncher.launch",
+      "Name": "Launch App",
+      "Icon": "imgs/action-launch",
+      "Tooltip": "Launch one app configured on this key. Press focuses it when running; long press closes it, or starts it as admin.",
+      "PropertyInspectorPath": "pi/launch.html",
+      "SupportedInMultiActions": true,
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/key-launch",
+          "TitleAlignment": "bottom",
+          "FontSize": 11
+        }
+      ]
+    }
+  ],
+  "Profiles": [
+    {
+      "Name": "profiles/Managed App Launcher",
+      "DeviceType": 0,
+      "Readonly": false,
+      "DontAutoSwitchWhenInstalled": true,
+      "AutoInstall": true
+    },
+    {
+      "Name": "profiles/Managed App Launcher XL",
+      "DeviceType": 2,
+      "Readonly": false,
+      "DontAutoSwitchWhenInstalled": true,
+      "AutoInstall": true
+    },
+    {
+      "Name": "profiles/Managed App Launcher Mini",
+      "DeviceType": 1,
+      "Readonly": false,
+      "DontAutoSwitchWhenInstalled": true,
+      "AutoInstall": true
+    }
+  ]
+}

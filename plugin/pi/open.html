@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Open Launcher</title>
+  <link rel="stylesheet" href="pi.css">
+</head>
+<body>
+  <div class="row">
+    <label for="list">List</label>
+    <select id="list" data-key="list">
+      <option value="" data-fixed>default</option>
+    </select>
+  </div>
+  <div class="row">
+    <label></label>
+    <div class="with-button"><button id="manager" type="button">Manage apps…</button></div>
+  </div>
+  <div class="info" id="info">Opens the Managed App Launcher profile on this deck with the chosen list.</div>
+
+  <script src="pi.js"></script>
+  <script>
+    bindManagerButton("manager");
+    onInfo = (info) => {
+      const select = document.getElementById("list");
+      const home = (info.homeList || "default").toLowerCase();
+      select.querySelector("option[data-fixed]").textContent = info.homeList || "default";
+      fillPresets(select, (info.lists || []).filter((l) => l.toLowerCase() !== home));
+      document.getElementById("info").innerHTML = `config: <code>${escapeHtml(info.configPath)}</code>`;
+    };
+  </script>
+</body>
+</html>

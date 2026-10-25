@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ManagedLauncher.Cli/ManagedLauncher.Cli.csproj" />
+    <Project Path="src/ManagedLauncher.Core/ManagedLauncher.Core.csproj" />
+    <Project Path="src/ManagedLauncher.Manager/ManagedLauncher.Manager.csproj" />
+    <Project Path="src/ManagedLauncher.Plugin/ManagedLauncher.Plugin.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ManagedLauncher.Tests/ManagedLauncher.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/IconGen/IconGen.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Launch</title>
+  <link rel="stylesheet" href="pi.css">
+</head>
+<body>
+  <div class="row">
+    <label for="target">Target</label>
+    <div class="with-button">
+      <input id="target" data-key="target" placeholder=".lnk, exe, app-*\x.exe or AUMID">
+      <button id="browse" type="button">…</button>
+      <input id="picker" type="file" accept=".lnk,.exe" hidden>
+    </div>
+  </div>
+  <div class="row">
+    <label for="kind">Kind</label>
+    <select id="kind" data-key="kind">
+      <option value="">detect</option>
+      <option value="lnk">shortcut</option>
+      <option value="exe">exe</option>
+      <option value="glob">versioned path</option>
+      <option value="aumid">app id (AUMID)</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="title">Title</label>
+    <input id="title" data-key="title" placeholder="from target">
+  </div>
+  <div class="row">
+    <label for="preset">Preset</label>
+    <select id="preset" data-key="preset">
+      <option value="" data-fixed>default</option>
+    </select>
+  </div>
+
+  <h3>Overrides</h3>
+  <div class="row">
+    <label for="onRunning">If running</label>
+    <select id="onRunning" data-key="onRunning">
+      <option value="">from preset</option>
+      <option value="auto">focus, else relaunch</option>
+      <option value="focus">focus</option>
+      <option value="relaunch">relaunch</option>
+      <option value="none">do nothing</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="longPress">Long press</label>
+    <select id="longPress" data-key="longPress">
+      <option value="">from preset</option>
+      <option value="auto">kill / run as admin</option>
+      <option value="none">same as short</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="killMode">Kill</label>
+    <select id="killMode" data-key="killMode">
+      <option value="">from preset</option>
+      <option value="all">all instances</option>
+      <option value="newest">newest instance</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="admin">Admin</label>
+    <select id="admin" data-key="admin" data-type="bool">
+      <option value="">from preset</option>
+      <option value="true">always</option>
+      <option value="false">never</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="indicator">Indicator</label>
+    <select id="indicator" data-key="indicator">
+      <option value="">from preset</option>
+      <option value="border">border</option>
+      <option value="dot">dot</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="args">Arguments</label>
+    <input id="args" data-key="args">
+  </div>
+  <div class="row">
+    <label for="workDir">Start in</label>
+    <input id="workDir" data-key="workDir">
+  </div>
+  <div class="row">
+    <label for="trackPath">Track exe</label>
+    <input id="trackPath" data-key="trackPath" placeholder="when the launched exe exits at once">
+  </div>
+  <div class="row">
+    <label for="icon">Icon file</label>
+    <input id="icon" data-key="icon" placeholder="from target">
+  </div>
+  <div class="info" id="info"></div>
+
+  <script src="pi.js"></script>
+  <script>
+    bindFilePicker("browse", "picker", "target");
+    onInfo = (info) => {
+      fillPresets(document.getElementById("preset"), info.presets);
+      document.getElementById("info").innerHTML = describe(info);
+    };
+  </script>
+</body>
+</html>

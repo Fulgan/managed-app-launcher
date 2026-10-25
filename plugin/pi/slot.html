@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>App Slot</title>
+  <link rel="stylesheet" href="pi.css">
+</head>
+<body>
+  <div class="row">
+    <label for="slot">Slot</label>
+    <input id="slot" data-key="slot" data-type="int" type="number" min="0" placeholder="paged">
+  </div>
+  <div class="row">
+    <label for="list">List</label>
+    <select id="list" data-key="list">
+      <option value="" data-fixed>from Open key / default</option>
+    </select>
+  </div>
+  <div class="row">
+    <label></label>
+    <div class="with-button"><button id="manager" type="button">Manage apps…</button></div>
+  </div>
+  <div class="info" id="info">Leave Slot empty to page through the list.</div>
+
+  <script src="pi.js"></script>
+  <script>
+    bindManagerButton("manager");
+    onInfo = (info) => {
+      fillPresets(document.getElementById("list"), info.lists);
+      const lines = [];
+      if (info.slot !== null && info.slot !== undefined) {
+        lines.push(`fixed: always app <code>${info.slot}</code>`);
+      } else {
+        lines.push(`paged: list <code>${escapeHtml(info.list)}</code>, page <code>${info.page}/${info.pages}</code>, ${info.apps} apps`);
+      }
+      if (info.role === "nextpage") lines.push("next-page key — press: next, hold: previous");
+      else if (info.entry) lines.push(`app <code>${info.appIndex}</code>: <code>${escapeHtml(info.entry.title || info.entry.target)}</code>`);
+      else lines.push("empty — add apps with <code>malaunch pin &lt;path&gt;</code>");
+      lines.push(describe(info));
+      document.getElementById("info").innerHTML = lines.join("<br>");
+    };
+  </script>
+</body>
+</html>
