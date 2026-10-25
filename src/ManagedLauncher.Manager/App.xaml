@@ -347,6 +347,43 @@
       </Setter>
     </Style>
 
+    <!-- Dark rounded menus, used for the add buttons' choices. -->
+    <Style TargetType="ContextMenu">
+      <Setter Property="Foreground" Value="{StaticResource Text}" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="HasDropShadow" Value="False" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ContextMenu">
+            <Border Background="{StaticResource Field}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="12" Padding="6" MinWidth="200">
+              <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="MenuItem">
+      <Setter Property="Foreground" Value="{StaticResource Text}" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="MenuItem">
+            <Border x:Name="b" Background="Transparent" CornerRadius="8" Padding="12,8">
+              <StackPanel Orientation="Horizontal">
+                <ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
+                <TextBlock Text="{TemplateBinding InputGestureText}" Foreground="{StaticResource Muted}" Margin="16,0,0,0" />
+              </StackPanel>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="b" Property="Background" Value="{StaticResource Pressed}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- iOS-style on/off switch; the content is the label on its right. -->
     <Style x:Key="Switch" TargetType="CheckBox">
       <Setter Property="Foreground" Value="{StaticResource Text}" />

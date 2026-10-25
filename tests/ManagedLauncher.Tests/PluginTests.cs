@@ -40,6 +40,13 @@ public class PluginTests
             Controller.PluginContext = "plugin-uuid";
         }
 
+        /// <summary>Handles the event and waits for the work it fired, such as the key's first refresh.</summary>
+        public async Task HandleAsync(StreamDeckEvent ev)
+        {
+            await Controller.HandleAsync(ev);
+            await Controller.IdleAsync();
+        }
+
         public string AddApp(string name)
         {
             var exe = Tmp.Touch(name + ".exe");
@@ -68,8 +75,8 @@ public class PluginTests
         h.AddApp("a");
         h.Config.EnsureList(null).Add(new Entry { Target = h.Tmp.Touch("b.exe"), Title = "Bee" });
 
-        await h.Controller.HandleAsync(Appear("k0", 0, 0));
-        await h.Controller.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
 
         Assert.Contains(("title", "k0", null), h.Deck.Calls);
         Assert.Contains(("title", "k1", "Bee"), h.Deck.Calls);
@@ -81,8 +88,8 @@ public class PluginTests
         using var h = new Harness();
         for (var i = 0; i < 16; i++)
             h.AddApp($"app{i:00}");
-        await h.Controller.HandleAsync(Appear("first", 0, 0));
-        await h.Controller.HandleAsync(Appear("nav", 4, 2));
+        await h.HandleAsync(Appear("first", 0, 0));
+        await h.HandleAsync(Appear("nav", 4, 2));
 
         Assert.Equal("next 1/2", FindIcon(h, "nav"));
         Assert.Contains(("title", "nav", null), h.Deck.Calls);
@@ -108,7 +115,7 @@ public class PluginTests
         h.AddApp("main");
         h.Config.EnsureList("dev").Add(new Entry { Target = h.Tmp.Touch("devtool.exe") });
 
-        await h.Controller.HandleAsync(Appear("ctx", 0, 0, settings: """{"list":"dev"}"""));
+        await h.HandleAsync(Appear("ctx", 0, 0, settings: """{"list":"dev"}"""));
 
         Assert.EndsWith("devtool.exe", FindIcon(h, "ctx"));
     }
@@ -123,9 +130,9 @@ public class PluginTests
         var opener = KeyController.Key.From(Appear("opener", 0, 0, settings: """{"list":"dev"}""", action: KeyController.OpenAction));
 
         await h.Controller.OpenLauncherAsync(opener);
-        await h.Controller.HandleAsync(Appear("back", 0, 0));
-        await h.Controller.HandleAsync(Appear("k1", 1, 0));
-        await h.Controller.HandleAsync(Appear("k10", 0, 2));
+        await h.HandleAsync(Appear("back", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("k10", 0, 2));
 
         Assert.Contains(("switch", Device, "profiles/Managed App Launcher"), h.Deck.Calls);
         Assert.Equal("back", FindIcon(h, "back"));
@@ -149,9 +156,9 @@ public class PluginTests
         h.Config.Decks[Device] = "games";
         h.Controller.PluginContext = "plugin";
 
-        await h.Controller.HandleAsync(Connect());
-        await h.Controller.HandleAsync(Appear("k0", 0, 0));
-        await h.Controller.HandleAsync(Appear("k10", 0, 2));
+        await h.HandleAsync(Connect());
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k10", 0, 2));
 
         Assert.Single(h.Deck.Calls, c => c == ("switch", Device, "profiles/Managed App Launcher"));
         Assert.EndsWith("game.exe", FindIcon(h, "k0"));
@@ -163,7 +170,7 @@ public class PluginTests
     {
         using var h = new Harness();
         h.Config.EnsureList("games");
-        await h.Controller.HandleAsync(Connect());
+        await h.HandleAsync(Connect());
         Assert.DoesNotContain(h.Deck.Calls, c => c.Item1 == "switch");
 
         h.Config.Decks[Device] = "games";
@@ -181,7 +188,7 @@ public class PluginTests
     {
         using var h = new Harness();
         h.Config.EnsureList("games");
-        await h.Controller.HandleAsync(StreamDeckEvent.Parse($$"""{"event":"deviceDidDisconnect","device":"{{Device}}"}"""));
+        await h.HandleAsync(StreamDeckEvent.Parse($$"""{"event":"deviceDidDisconnect","device":"{{Device}}"}"""));
 
         h.Config.Decks[Device] = "games";
         await h.Controller.OnConfigChangedAsync();
@@ -199,19 +206,63 @@ public class PluginTests
         var opener = KeyController.Key.From(Appear("opener", 0, 0, settings: """{"list":"dev"}""", action: KeyController.OpenAction));
 
         await h.Controller.OpenLauncherAsync(opener);
-        await h.Controller.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
         Assert.EndsWith("tool.exe", FindIcon(h, "k1"));
 
-        await h.Controller.HandleAsync(Event("willDisappear", "k1", KeyController.SlotAction));
-        await h.Controller.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Event("willDisappear", "k1", KeyController.SlotAction));
+        await h.HandleAsync(Appear("k0", 0, 0));
         Assert.EndsWith("game.exe", FindIcon(h, "k0"));
+    }
+
+    [Fact]
+    public async Task RowBreakShiftsAppsToNextRowAndFixedSlotOnBreakIsEmpty()
+    {
+        using var h = new Harness();
+        h.AddApp("a");
+        h.Config.EnsureList(null).Add(new Entry { Break = ListBreak.Row });
+        h.AddApp("b");
+
+        await h.HandleAsync(Appear("r1", 0, 1));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("fixed", 2, 2, settings: """{"slot":1}"""));
+
+        Assert.EndsWith("b.exe", FindIcon(h, "r1"));
+        Assert.Equal("blank", FindIcon(h, "k1"));
+        Assert.Equal("blank", FindIcon(h, "fixed"));
+    }
+
+    [Theory]
+    [InlineData(7, "profiles/Managed App Launcher Plus")]
+    [InlineData(9, "profiles/Managed App Launcher Neo")]
+    public async Task SameSizedDecksGetTheirOwnLauncherByType(int type, string profile)
+    {
+        using var h = new Harness();
+        await h.HandleAsync(StreamDeckEvent.Parse(
+            $$$"""{"event":"deviceDidConnect","device":"d","deviceInfo":{"name":"x","size":{"columns":4,"rows":2},"type":{{{type}}}}}"""));
+        var opener = KeyController.Key.From(StreamDeckEvent.Parse(
+            $$$"""{"event":"willAppear","context":"o","action":"{{{KeyController.OpenAction}}}","device":"d","payload":{"settings":{} } }"""));
+
+        await h.Controller.OpenLauncherAsync(opener);
+
+        Assert.Contains(("switch", "d", profile), h.Deck.Calls);
+    }
+
+    [Fact]
+    public async Task MalformedDeviceInfoIsIgnored()
+    {
+        using var h = new Harness();
+
+        h.Controller.AddDevices("""{"devices":[{"id":"x","size":{"columns":"five","rows":3}},{"id":"y","size":7},{"size":{}}]}""");
+        await h.HandleAsync(StreamDeckEvent.Parse("""{"event":"deviceDidConnect","device":"z","deviceInfo":{"size":{"columns":-1,"rows":2}}}"""));
+        await h.HandleAsync(Event("willAppear", "k", KeyController.SlotAction, """{"coordinates":{"column":"a"}}"""));
+        await h.HandleAsync(Appear("s", 0, 0, settings: """{"slot":"3"}"""));
     }
 
     [Fact]
     public async Task HotPluggedDeckSizeComesFromRootDeviceInfo()
     {
         using var h = new Harness();
-        await h.Controller.HandleAsync(StreamDeckEvent.Parse(
+        await h.HandleAsync(StreamDeckEvent.Parse(
             """{"event":"deviceDidConnect","device":"xl","deviceInfo":{"name":"XL","size":{"columns":8,"rows":4},"type":2}}"""));
         var opener = KeyController.Key.From(StreamDeckEvent.Parse(
             $$$"""{"event":"willAppear","context":"o","action":"{{{KeyController.OpenAction}}}","device":"xl","payload":{"settings":{} } }"""));
@@ -228,7 +279,7 @@ public class PluginTests
         h.Config.EnsureList("work").Add(new Entry { Target = h.Tmp.Touch("tool.exe") });
         h.Config.RenameList("work", "office");
 
-        await h.Controller.HandleAsync(Appear("k0", 0, 0, settings: """{"list":"work","slot":0}"""));
+        await h.HandleAsync(Appear("k0", 0, 0, settings: """{"list":"work","slot":0}"""));
 
         Assert.EndsWith("tool.exe", FindIcon(h, "k0"));
         var settings = Assert.Single(h.Deck.Calls, c => c.Item1 == "settings").Item3!;
@@ -241,8 +292,8 @@ public class PluginTests
         using var h = new Harness();
         h.Config.EnsureList("games");
 
-        await h.Controller.HandleAsync(Appear("o1", 0, 0, settings: """{"list":"games"}""", action: KeyController.OpenAction));
-        await h.Controller.HandleAsync(Appear("o2", 1, 0, action: KeyController.OpenAction));
+        await h.HandleAsync(Appear("o1", 0, 0, settings: """{"list":"games"}""", action: KeyController.OpenAction));
+        await h.HandleAsync(Appear("o2", 1, 0, action: KeyController.OpenAction));
 
         Assert.Equal("open games", FindIcon(h, "o1"));
         Assert.Equal("open default", FindIcon(h, "o2"));
@@ -256,7 +307,7 @@ public class PluginTests
         var opened = 0;
         h.Controller.OpenManager = () => ++opened > 0;
 
-        await h.Controller.HandleAsync(Appear("m", 0, 0, action: KeyController.ManageAction));
+        await h.HandleAsync(Appear("m", 0, 0, action: KeyController.ManageAction));
         await h.Controller.ManageAsync(KeyController.Key.From(Appear("m", 0, 0, action: KeyController.ManageAction)));
 
         Assert.Equal("manage", FindIcon(h, "m"));
@@ -270,7 +321,7 @@ public class PluginTests
         var seen = new List<ManagedLauncher.Core.Config.KnownDeck>();
         h.Controller.DeckSeen = seen.Add;
 
-        await h.Controller.HandleAsync(Connect());
+        await h.HandleAsync(Connect());
 
         Assert.Equal([new ManagedLauncher.Core.Config.KnownDeck(Device, "Desk", 5, 3)], seen);
     }
@@ -282,7 +333,7 @@ public class PluginTests
         for (var i = 0; i < 12; i++)
             h.AddApp($"app{i:00}");
 
-        await h.Controller.HandleAsync(Appear("k10", 0, 2));
+        await h.HandleAsync(Appear("k10", 0, 2));
 
         Assert.EndsWith("app10.exe", FindIcon(h, "k10"));
     }
@@ -295,7 +346,7 @@ public class PluginTests
         var opened = 0;
         h.Controller.OpenManager = () => ++opened > 0;
 
-        await h.Controller.HandleAsync(Appear("manage", 4, 2));
+        await h.HandleAsync(Appear("manage", 4, 2));
         Assert.Equal("manage", FindIcon(h, "manage"));
 
         await h.Controller.ManageAsync(KeyController.Key.From(Appear("manage", 4, 2)));
@@ -313,7 +364,7 @@ public class PluginTests
         using var h = new Harness();
         for (var i = 0; i < 16; i++)
             h.AddApp($"app{i:00}");
-        await h.Controller.HandleAsync(Appear("k13", 3, 2));
+        await h.HandleAsync(Appear("k13", 3, 2));
 
         Assert.EndsWith("app13.exe", FindIcon(h, "k13"));
 
@@ -328,7 +379,7 @@ public class PluginTests
         for (var i = 0; i < 20; i++)
             h.AddApp($"app{i:00}");
 
-        await h.Controller.HandleAsync(Appear("ctx", 4, 2, settings: """{"slot":17}"""));
+        await h.HandleAsync(Appear("ctx", 4, 2, settings: """{"slot":17}"""));
 
         Assert.EndsWith("app17.exe", FindIcon(h, "ctx"));
     }
@@ -337,10 +388,10 @@ public class PluginTests
     public async Task EmptyKeyIsBlankAndIgnoresPresses()
     {
         using var h = new Harness();
-        await h.Controller.HandleAsync(Appear("ctx", 0, 0));
+        await h.HandleAsync(Appear("ctx", 0, 0));
 
-        await h.Controller.HandleAsync(Event("keyDown", "ctx", KeyController.SlotAction));
-        await h.Controller.HandleAsync(Event("keyUp", "ctx", KeyController.SlotAction));
+        await h.HandleAsync(Event("keyDown", "ctx", KeyController.SlotAction));
+        await h.HandleAsync(Event("keyUp", "ctx", KeyController.SlotAction));
         await Task.Delay(100, TestContext.Current.CancellationToken);
 
         Assert.Contains(("image", "ctx", "blank"), h.Deck.Calls);
@@ -370,7 +421,7 @@ public class PluginTests
         h.Config.ListOptions["dev"] = new ListOptions { ReturnAfterLaunch = true };
         await h.Controller.OpenLauncherAsync(KeyController.Key.From(
             Appear("opener", 0, 0, settings: """{"list":"dev"}""", action: KeyController.OpenAction)));
-        await h.Controller.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
 
         await h.Controller.ExecuteAsync(KeyController.Key.From(Appear("k1", 1, 0)), isLong: false);
 
@@ -386,7 +437,7 @@ public class PluginTests
             h.AddApp($"app{i:00}");
         h.Config.ListOptions["default"] = new ListOptions { ReturnAfterLaunch = true };
         var nav = KeyController.Key.From(Appear("nav", 4, 2));
-        await h.Controller.HandleAsync(Appear("nav", 4, 2));
+        await h.HandleAsync(Appear("nav", 4, 2));
         await h.Controller.TurnPageAsync(nav, +1);
         Assert.Equal(1, h.Controller.PageOf(Device));
 
@@ -413,6 +464,68 @@ public class PluginTests
     }
 
     [Fact]
+    public async Task LaunchedAppStaysStartingUntilItShowsAWindow()
+    {
+        using var h = new Harness();
+        var exe = h.AddApp("slow");
+        var hasWindow = false;
+        h.Controller.HasWindow = _ => hasWindow;
+        var key = KeyController.Key.From(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k0", 0, 0));
+
+        await h.Controller.ExecuteAsync(key, isLong: false);
+        Assert.Equal(RunState.Starting, h.Controller.StateOf(key, h.Tracker.Refresh()));
+        Assert.Contains(h.Images.Visuals, v => v.State == RunState.Starting);
+
+        h.Source.Processes = [new ProcessInfo(7, exe, null, DateTime.UtcNow)];
+        Assert.Equal(RunState.Starting, h.Controller.StateOf(key, h.Tracker.Refresh()));
+
+        hasWindow = true;
+        Assert.Equal(RunState.Running, h.Controller.StateOf(key, h.Tracker.Refresh()));
+        hasWindow = false;
+        Assert.Equal(RunState.Running, h.Controller.StateOf(key, h.Tracker.Refresh()));
+    }
+
+    [Fact]
+    public async Task ProcessesStartedByALaunchStubCountAsTheApp()
+    {
+        using var h = new Harness();
+        h.AddApp("shim");
+        var windows = new HashSet<int>();
+        h.Controller.HasWindow = pids => pids.Any(windows.Contains);
+        h.Operations.StartedPid = 100;
+        var key = KeyController.Key.From(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k0", 0, 0));
+
+        await h.Controller.ExecuteAsync(key, isLong: false);
+        var now = DateTime.UtcNow;
+        h.Source.Processes =
+        [
+            new ProcessInfo(101, @"C:\pkg\tools\real.exe", null, now, ParentPid: 100),
+            new ProcessInfo(102, @"C:\Temp\real64.exe", null, now, Elevated: true, ParentPid: 101),
+            new ProcessInfo(103, @"C:\other.exe", null, now.AddHours(-1), ParentPid: 101),
+        ];
+        Assert.Equal(RunState.Starting, h.Controller.StateOf(key, h.Tracker.Refresh()));
+
+        windows.Add(102);
+        Assert.Equal(RunState.Elevated, h.Controller.StateOf(key, h.Tracker.Refresh()));
+
+        h.Operations.CanFocus = true;
+        await h.Controller.ExecuteAsync(key, isLong: false);
+        Assert.Equal(1, h.Operations.Launches);
+    }
+
+    [Fact]
+    public void ElevatedProcessShowsElevated()
+    {
+        using var h = new Harness();
+        var exe = h.AddApp("admin");
+        h.Source.Processes = [new ProcessInfo(9, exe, null, DateTime.UtcNow.AddMinutes(-1), Elevated: true)];
+
+        Assert.Equal(RunState.Elevated, h.Controller.StateOf(KeyController.Key.From(Appear("k0", 0, 0)), h.Tracker.Refresh()));
+    }
+
+    [Fact]
     public async Task RepeatedPressesDuringStartupLaunchOnce()
     {
         using var h = new Harness();
@@ -433,7 +546,7 @@ public class PluginTests
     {
         using var h = new Harness();
         h.AddApp("a");
-        await h.Controller.HandleAsync(Appear("ctx", 0, 0));
+        await h.HandleAsync(Appear("ctx", 0, 0));
         var renders = h.Images.Renders;
 
         h.Tracker.Refresh();
@@ -447,8 +560,8 @@ public class PluginTests
     {
         using var h = new Harness();
         h.AddApp("a");
-        await h.Controller.HandleAsync(Appear("a", 0, 0));
-        await h.Controller.HandleAsync(Appear("b", 1, 0));
+        await h.HandleAsync(Appear("a", 0, 0));
+        await h.HandleAsync(Appear("b", 1, 0));
 
         h.Config = new AppConfig().Normalize();
         h.Config.EnsureList(null).Add(new Entry { Target = h.Tmp.Touch("x.exe") });
@@ -464,7 +577,7 @@ public class PluginTests
         using var h = new Harness();
         var exe = h.Tmp.Touch("Inline.exe").Replace("\\", "\\\\");
 
-        await h.Controller.HandleAsync(Appear("ctx", 0, 0, settings: $$"""{"target":"{{exe}}","onRunning":"relaunch"}""", action: KeyController.LaunchAction));
+        await h.HandleAsync(Appear("ctx", 0, 0, settings: $$"""{"target":"{{exe}}","onRunning":"relaunch"}""", action: KeyController.LaunchAction));
 
         Assert.EndsWith("Inline.exe", FindIcon(h, "ctx"));
     }
@@ -475,7 +588,7 @@ public class PluginTests
         using var h = new Harness();
         h.Config.EnsureList(null).Add(new Entry { Target = @"C:\Users\steph\AppData\Local\Vivaldi\Application\vivaldi.exe" });
 
-        await h.Controller.HandleAsync(Appear("ctx", 0, 0));
+        await h.HandleAsync(Appear("ctx", 0, 0));
 
         Assert.True(h.Images.LastVisual!.Broken);
     }
@@ -531,10 +644,13 @@ public class PluginTests
         public int Launches { get; private set; }
         public bool CanFocus { get; set; } = true;
 
+        /// <summary>Pid reported for the process each launch starts; null like a shell launch that reports none.</summary>
+        public int? StartedPid { get; set; }
+
         public OperationResult Launch(ResolvedTarget target, LaunchOptions options, bool elevated)
         {
             Launches++;
-            return OperationResult.Ok;
+            return OperationResult.Started(StartedPid);
         }
 
         public bool TryFocus(IReadOnlyList<ProcessInfo> processes) => CanFocus;
@@ -552,6 +668,7 @@ public class PluginTests
 
         public int Renders { get { lock (visuals) return visuals.Count; } }
         public KeyVisual? LastVisual { get { lock (visuals) return visuals.LastOrDefault(); } }
+        public IReadOnlyList<KeyVisual> Visuals { get { lock (visuals) return visuals.ToList(); } }
 
         /// <summary>Image strings carry the icon source so tests can tell which app a key shows.</summary>
         public Task<string> RenderAsync(KeyVisual visual, string? customIcon)
@@ -569,7 +686,6 @@ public class PluginTests
         public string Manage => "manage";
         public string Open(string list) => $"open {list}";
 
-        public void Invalidate() { }
     }
 
     internal sealed class FakeDeck : IStreamDeck

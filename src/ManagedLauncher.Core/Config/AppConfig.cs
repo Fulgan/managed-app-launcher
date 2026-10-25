@@ -2,7 +2,6 @@ namespace ManagedLauncher.Core.Config;
 
 public class AppConfig
 {
-    public const string DefaultPresetName = "default";
     public const string DefaultListName = "default";
 
     public int LongPressMs { get; set; } = 2000;
@@ -12,7 +11,9 @@ public class AppConfig
     /// <summary>How long after a launch further presses only focus, so repeated presses during startup don't spawn copies.</summary>
     public int LaunchGraceMs { get; set; } = 5000;
 
-    public Dictionary<string, Preset> Presets { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Shared settings groups of older configs; folded into their entries on load and never written back.</summary>
+    [System.Text.Json.Serialization.JsonInclude, System.Text.Json.Serialization.JsonPropertyName("presets")]
+    internal Dictionary<string, LaunchSettings>? LegacyPresets { get; set; }
 
     /// <summary>Named app lists in display order. The plugin pages through one list per key; lists never have gaps.</summary>
     public Dictionary<string, List<Entry>> Lists { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -33,19 +34,20 @@ public class AppConfig
     public List<Entry>? Apps { get; set; }
 
     /// <summary>
-    /// Guarantees the invariants the rest of the code relies on: <c>default</c> preset and home list exist,
+    /// Guarantees the invariants the rest of the code relies on: the home list exists, legacy presets are folded in,
     /// collections are non-null, lists have no gaps, renames and decks only point at existing lists.
     /// </summary>
     public AppConfig Normalize()
     {
-        Presets = new Dictionary<string, Preset>(Presets ?? [], StringComparer.OrdinalIgnoreCase);
-        Presets.TryAdd(DefaultPresetName, new Preset());
 
-        Lists = new Dictionary<string, List<Entry>>(Lists ?? [], StringComparer.OrdinalIgnoreCase);
+        var lists = new Dictionary<string, List<Entry>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, entries) in Lists ?? [])
+            lists[lists.ContainsKey(name) ? UnusedName(lists, name) : name] = entries;
+        Lists = lists;
         foreach (var name in Lists.Keys.ToList())
-            Lists[name] = (Lists[name] ?? []).Where(a => a is not null && !string.IsNullOrWhiteSpace(a.Target)).ToList();
+            Lists[name] = (Lists[name] ?? []).Where(IsValidItem).ToList();
 
-        Renames = new Dictionary<string, string>(Renames ?? [], StringComparer.OrdinalIgnoreCase);
+        Renames = FirstWins(Renames, StringComparer.OrdinalIgnoreCase);
         foreach (var old in Renames.Keys.ToList())
         {
             if (Lists.ContainsKey(old) || !Lists.ContainsKey(ResolveList(old)))
@@ -54,14 +56,56 @@ public class AppConfig
 
         Lists.TryAdd(HomeList, []);
         if (Apps is { Count: > 0 })
-            Lists[HomeList].AddRange(Apps.Where(a => a is not null && !string.IsNullOrWhiteSpace(a.Target)));
+            Lists[HomeList].AddRange(Apps.Where(IsValidItem));
         Apps = null;
+        FoldLegacyPresets();
 
-        Decks = new Dictionary<string, string>(
-            (Decks ?? []).Where(d => d.Value is not null && Lists.ContainsKey(d.Value)), StringComparer.Ordinal);
-        ListOptions = new Dictionary<string, ListOptions>(
-            (ListOptions ?? []).Where(o => o.Value is not null && Lists.ContainsKey(o.Key)), StringComparer.OrdinalIgnoreCase);
+        Decks = FirstWins((Decks ?? []).Where(d => d.Value is not null && Lists.ContainsKey(d.Value)), StringComparer.Ordinal);
+        ListOptions = FirstWins((ListOptions ?? []).Where(o => o.Value is not null && Lists.ContainsKey(o.Key)), StringComparer.OrdinalIgnoreCase);
         return this;
+    }
+
+    private static bool IsValidItem(Entry? item) => item is not null && (item.IsBreak || !string.IsNullOrWhiteSpace(item.Target));
+
+    /// <summary>Layout kinds of the named list's items, in order.</summary>
+    public IReadOnlyList<Paging.ListItemKind> LayoutOf(string? list) => GetList(list).Select(e => e.LayoutKind).ToList();
+
+    /// <summary>
+    /// Older configs shared settings through named presets. Each entry takes its preset's values, then the
+    /// <c>default</c> preset's, for every field it doesn't set itself, so it launches exactly as before.
+    /// </summary>
+    private void FoldLegacyPresets()
+    {
+        var presets = FirstWins(LegacyPresets?.Where(p => p.Value is not null), StringComparer.OrdinalIgnoreCase);
+        var fallback = presets.GetValueOrDefault("default");
+        foreach (var entry in Lists.Values.SelectMany(l => l))
+        {
+            if (entry.LegacyPreset is { } name && presets.TryGetValue(name, out var preset))
+                entry.FillFrom(preset);
+            entry.FillFrom(fallback);
+            entry.LegacyPreset = null;
+        }
+        LegacyPresets = null;
+    }
+
+    /// <summary>
+    /// Copies into a dictionary with <paramref name="comparer"/>. A hand-edited file can hold keys that differ only
+    /// by case; the first one wins instead of the load failing.
+    /// </summary>
+    private static Dictionary<string, T> FirstWins<T>(IEnumerable<KeyValuePair<string, T>>? source, StringComparer comparer)
+    {
+        var result = new Dictionary<string, T>(comparer);
+        foreach (var (key, value) in source ?? [])
+            result.TryAdd(key, value);
+        return result;
+    }
+
+    private static string UnusedName<T>(Dictionary<string, T> taken, string stem)
+    {
+        var name = stem;
+        for (var n = 2; taken.ContainsKey(name); n++)
+            name = $"{stem} {n}";
+        return name;
     }
 
     /// <summary>
@@ -81,13 +125,7 @@ public class AppConfig
     }
 
     /// <summary><paramref name="stem"/>, or "stem 2", "stem 3"… whichever no list uses yet.</summary>
-    public string UnusedListName(string stem)
-    {
-        var name = stem;
-        for (var n = 2; Lists.ContainsKey(name); n++)
-            name = $"{stem} {n}";
-        return name;
-    }
+    public string UnusedListName(string stem) => UnusedName(Lists, stem);
 
     /// <summary>Why <paramref name="to"/> can't be the new name of list <paramref name="from"/>, or null when it can.</summary>
     public string? CheckListName(string from, string to)
@@ -179,10 +217,11 @@ public class AppConfig
     public ListOptions OptionsOf(string? list) =>
         ListOptions.TryGetValue(ResolveList(list), out var options) ? options : new ListOptions();
 
+    /// <summary>The app at <paramref name="index"/>; null past the end or for a break.</summary>
     public Entry? GetApp(string? list, int index)
     {
         var apps = GetList(list);
-        return index >= 0 && index < apps.Count ? apps[index] : null;
+        return index >= 0 && index < apps.Count && !apps[index].IsBreak ? apps[index] : null;
     }
 
     /// <returns>The index the entry ended up at.</returns>

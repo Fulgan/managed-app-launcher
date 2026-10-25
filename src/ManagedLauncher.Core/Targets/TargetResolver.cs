@@ -22,6 +22,7 @@ public static class TargetResolver
             TargetKind.Glob => ResolveGlob(target),
             TargetKind.Lnk => ResolveLnk(target),
             TargetKind.Aumid => ResolveAumid(target),
+            TargetKind.Url => ResolveUrl(target),
             _ => ResolvedTarget.Failed(kind, $"unknown kind {kind}"),
         };
 
@@ -31,6 +32,7 @@ public static class TargetResolver
             resolved = resolved with
             {
                 MatchPath = GlobResolver.HasWildcard(track) ? GlobResolver.Resolve(track) : Path.GetFullPath(track),
+                IconSource = resolved.IconSource ?? (Directory.Exists(track) ? null : track),
             };
         }
         return resolved;
@@ -72,6 +74,25 @@ public static class TargetResolver
 
         return new(TargetKind.Lnk, path, info.Aumid, exe is null ? null : Path.GetFullPath(exe),
             exe, info.Arguments, info.WorkingDirectory, path, null);
+    }
+
+    /// <summary>A link is launchable only while some program is registered for its scheme.</summary>
+    private static ResolvedTarget ResolveUrl(string url)
+    {
+        var colon = url.IndexOf(':');
+        var scheme = colon > 0 ? url[..colon] : "";
+        return IsRegisteredScheme(scheme)
+            ? new ResolvedTarget(TargetKind.Url, url, null, null, null, null, null, null, null)
+            : ResolvedTarget.Failed(TargetKind.Url, $"no program handles {scheme}: links");
+    }
+
+    /// <summary>Windows marks a link handler with a <c>URL Protocol</c> value under the scheme's class key.</summary>
+    private static bool IsRegisteredScheme(string scheme)
+    {
+        if (scheme.Length == 0)
+            return false;
+        using var key = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey(scheme);
+        return key?.GetValue("URL Protocol") is not null;
     }
 
     private static ResolvedTarget ResolveAumid(string target)

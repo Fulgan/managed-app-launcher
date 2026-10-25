@@ -35,13 +35,8 @@ Copy-Item (Join-Path $root "plugin/pi") $folder -Recurse
 $profiles = Join-Path $folder "profiles"
 New-Item -ItemType Directory -Force $profiles | Out-Null
 $cli = Join-Path $folder "malaunch.exe"
-foreach ($p in @(
-        @{ Name = "Managed App Launcher"; Size = "5x3"; Model = "20GBA9901" },
-        @{ Name = "Managed App Launcher XL"; Size = "8x4"; Model = "20GAT9902" },
-        @{ Name = "Managed App Launcher Mini"; Size = "3x2"; Model = "20GAI9902" })) {
-    & $cli page --out (Join-Path $profiles "$($p.Name).streamDeckProfile") --name "Managed App Launcher" --size $p.Size --device $p.Model
-    if ($LASTEXITCODE -ne 0) { throw "profile generation failed: $($p.Name)" }
-}
+& $cli profiles --out $profiles --manifest (Join-Path $folder "manifest.json")
+if ($LASTEXITCODE -ne 0) { throw "profile generation failed" }
 
 if (Test-Path $package) { Remove-Item $package -Force }
 Compress-Archive -Path $folder -DestinationPath "$package.zip"

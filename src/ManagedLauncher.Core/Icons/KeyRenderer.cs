@@ -3,17 +3,20 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using ManagedLauncher.Core.Config;
+using ManagedLauncher.Core.Processes;
 
 namespace ManagedLauncher.Core.Icons;
 
 /// <summary>What a key shows. Two equal visuals render identical images, so callers skip redraws when nothing changed.</summary>
-public sealed record KeyVisual(string? IconSource, bool Running, IndicatorStyle Indicator, bool Broken);
+public sealed record KeyVisual(string? IconSource, RunState State, IndicatorStyle Indicator, bool Broken);
 
 /// <summary>Draws a 144×144 key image (the Stream Deck @2x size): the app icon plus the running indicator.</summary>
 public static class KeyRenderer
 {
     public const int Size = 144;
     public static readonly Color RunningColor = IconArt.Green;
+    public static readonly Color ElevatedColor = IconArt.Red;
+    public static readonly Color StartingColor = IconArt.Yellow;
     public static readonly Color BrokenColor = IconArt.Red;
 
     /// <summary>Largest side of the icon's visible content; leaves a margin so the indicator never covers much of it.</summary>
@@ -48,8 +51,13 @@ public static class KeyRenderer
 
         if (visual.Broken)
             DrawBroken(g);
-        else if (visual.Running)
-            DrawIndicator(g, visual.Indicator);
+        else if (visual.State != RunState.Stopped)
+            DrawIndicator(g, visual.Indicator, visual.State switch
+            {
+                RunState.Elevated => ElevatedColor,
+                RunState.Starting => StartingColor,
+                _ => RunningColor,
+            });
         return canvas;
     }
 
@@ -137,9 +145,9 @@ public static class KeyRenderer
 
     private static Rectangle Centered(int width, int height) => new((Size - width) / 2, (Size - height) / 2, width, height);
 
-    private static void DrawIndicator(Graphics g, IndicatorStyle style)
+    private static void DrawIndicator(Graphics g, IndicatorStyle style, Color color)
     {
-        using var brush = new SolidBrush(RunningColor);
+        using var brush = new SolidBrush(color);
         if (style == IndicatorStyle.Dot)
         {
             var rect = new Rectangle(DotMargin, Size - DotDiameter - DotMargin, DotDiameter, DotDiameter);
@@ -148,7 +156,7 @@ public static class KeyRenderer
             g.DrawEllipse(outline, rect);
             return;
         }
-        using var pen = new Pen(RunningColor, BorderWidth) { Alignment = PenAlignment.Inset };
+        using var pen = new Pen(color, BorderWidth) { Alignment = PenAlignment.Inset };
         g.DrawRectangle(pen, 0, 0, Size - 1, Size - 1);
     }
 

@@ -30,8 +30,15 @@ public static class AppPaths
             var source = Path.Combine(from, name);
             if (!File.Exists(source))
                 continue;
-            File.Copy(source, Path.Combine(to, name), overwrite: false);
-            copied.Add(name);
+            try
+            {
+                File.Copy(source, Path.Combine(to, name), overwrite: false);
+                copied.Add(name);
+            }
+            catch (IOException)
+            {
+                // Another program starting at the same moment copied it first, or the plugin already wrote it.
+            }
         }
         return copied;
     }

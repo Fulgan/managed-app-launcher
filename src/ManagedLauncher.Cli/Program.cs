@@ -3,6 +3,7 @@ using ManagedLauncher.Core;
 using ManagedLauncher.Core.Config;
 using ManagedLauncher.Core.Icons;
 using ManagedLauncher.Core.Import;
+using ManagedLauncher.Core.Paging;
 using ManagedLauncher.Core.Targets;
 
 namespace ManagedLauncher.Cli;
@@ -12,15 +13,15 @@ internal static class Program
     private const string Usage = """
         usage: malaunch <command>
 
-          pin <path|AUMID> [--list name] [--at n] [--preset name] [--title t] [--notify]
+          pin <path|AUMID> [--list name] [--at n] [--title t] [--notify]
+          break row|page [--list name] [--at n]
           unpin <index> [--list name]
           move <from> <to> [--list name]
           list [--list name]
           lists | lists add <name> | lists rm <name> | lists rename <old> <new>
-          preset set <name> [--args a] [--workdir d] [--admin|--no-admin]
-                            [--on-running auto|focus|relaunch|none] [--kill-mode all|newest]
-                            [--indicator border|dot] [--long-press auto|none]
-          preset rm <name>
+          set <index> [--list name] [--args a] [--workdir d] [--admin|--no-admin]
+                      [--on-running auto|focus|relaunch|none] [--kill-mode all|newest]
+                      [--indicator border|dot] [--long-press auto|none]
           import <profile uuid|name> [--list name] [--append] [--dry-run]
           page --out file [--name n] [--device model] [--size CxR]
           shell install|uninstall
@@ -43,13 +44,15 @@ internal static class Program
             return args[0].ToLowerInvariant() switch
             {
                 "pin" => Pin(new CommandLine(args.Skip(1), "notify")),
+                "break" => Break(new CommandLine(args.Skip(1))),
                 "unpin" => Unpin(new CommandLine(args.Skip(1))),
                 "move" => Move(new CommandLine(args.Skip(1))),
                 "list" => List(new CommandLine(args.Skip(1))),
                 "lists" => Lists(new CommandLine(args.Skip(1))),
-                "preset" => Preset(new CommandLine(args.Skip(1), "admin", "no-admin")),
+                "set" => Set(new CommandLine(args.Skip(1), "admin", "no-admin")),
                 "import" => Import(new CommandLine(args.Skip(1), "dry-run", "append")),
                 "page" => Page(new CommandLine(args.Skip(1))),
+                "profiles" => Profiles(new CommandLine(args.Skip(1))),
                 "shell" => Shell(new CommandLine(args.Skip(1))),
                 _ => throw new UsageException($"unknown command '{args[0]}'"),
             };
@@ -69,16 +72,11 @@ internal static class Program
     private static int Pin(CommandLine cl)
     {
         var path = cl.Arg(0, "path");
-        var plan = PinAdvisor.Plan(path, cl.Get("title"), cl.Get("preset"));
+        var plan = PinAdvisor.Plan(path, cl.Get("title"));
         var resolved = TargetResolver.Resolve(plan.Entry);
         var at = cl.GetInt("at");
         var index = -1;
-        ConfigStore.Update(AppPaths.ConfigFile, c =>
-        {
-            if (plan.Entry.Preset != AppConfig.DefaultPresetName && !c.Presets.ContainsKey(plan.Entry.Preset))
-                throw new UsageException($"no preset named '{plan.Entry.Preset}'");
-            index = c.Insert(cl.Get("list"), plan.Entry, at);
-        });
+        ConfigStore.Update(AppPaths.ConfigFile, c => index = c.Insert(cl.Get("list"), plan.Entry, at));
 
         var lines = new List<string> { $"pinned {plan.Entry.Title ?? Path.GetFileNameWithoutExtension(plan.Entry.Target)} at {index}" };
         if (!resolved.IsLaunchable)
@@ -95,6 +93,21 @@ internal static class Program
             foreach (var line in lines.Skip(1))
                 Console.Error.WriteLine(line);
         }
+        return 0;
+    }
+
+    /// <summary>Inserts a row or page break: the next app starts on a new row or page of the deck.</summary>
+    private static int Break(CommandLine cl)
+    {
+        var kind = cl.Arg(0, "row|page").ToLowerInvariant() switch
+        {
+            "row" => ListBreak.Row,
+            "page" => ListBreak.Page,
+            var other => throw new UsageException($"unknown break '{other}', use row or page"),
+        };
+        var index = -1;
+        ConfigStore.Update(AppPaths.ConfigFile, c => index = c.Insert(cl.Get("list"), new Entry { Break = kind }, cl.GetInt("at")));
+        Console.WriteLine(index);
         return 0;
     }
 
@@ -123,18 +136,19 @@ internal static class Program
     {
         var config = ConfigStore.Load(AppPaths.ConfigFile);
         var rows = config.GetList(cl.Get("list"))
-            .Select((e, i) => new[]
-            {
-                i.ToString(),
-                e.Title ?? "",
-                (e.Kind ?? TargetKindDetector.Detect(e.Target)).ToString().ToLowerInvariant(),
-                e.Target,
-                TargetResolver.Resolve(e).Error ?? "",
-            })
+            .Select((e, i) => e.Break is { } b
+                ? [i.ToString(), $"--- {b.ToString().ToLowerInvariant()} break ---", "", "", ""]
+                : new[]
+                {
+                    i.ToString(),
+                    e.Title ?? "",
+                    (e.Kind ?? TargetKindDetector.Detect(e.Target)).ToString().ToLowerInvariant(),
+                    e.Target,
+                    TargetResolver.Resolve(e).Error ?? "",
+                })
             .ToList();
         Table(["index", "title", "kind", "target", "problem"], rows);
         Console.WriteLine();
-        Console.WriteLine($"presets: {string.Join(", ", config.Presets.Keys.Order())}");
         Console.WriteLine($"lists: {string.Join(", ", config.Lists.Keys.Order())}");
         return 0;
     }
@@ -172,35 +186,28 @@ internal static class Program
         }
     }
 
-    private static int Preset(CommandLine cl)
+    /// <summary>Changes the launch settings of one app; options not given stay as they are.</summary>
+    private static int Set(CommandLine cl)
     {
-        var verb = cl.Arg(0, "set|rm");
-        var name = cl.Arg(1, "preset name");
-        switch (verb.ToLowerInvariant())
+        var index = Index(cl.Arg(0, "index"));
+        var found = false;
+        ConfigStore.Update(AppPaths.ConfigFile, c =>
         {
-            case "set":
-                ConfigStore.Update(AppPaths.ConfigFile, c =>
-                {
-                    var p = c.Presets.TryGetValue(name, out var existing) ? existing : c.Presets[name] = new Preset();
-                    if (cl.Has("args")) p.Args = Blank(cl.Get("args"));
-                    if (cl.Has("workdir")) p.WorkDir = Blank(cl.Get("workdir"));
-                    if (cl.Has("admin")) p.Admin = true;
-                    if (cl.Has("no-admin")) p.Admin = false;
-                    p.OnRunning = cl.GetEnum<OnRunning>("on-running") ?? p.OnRunning;
-                    p.KillMode = cl.GetEnum<KillMode>("kill-mode") ?? p.KillMode;
-                    p.Indicator = cl.GetEnum<IndicatorStyle>("indicator") ?? p.Indicator;
-                    p.LongPress = cl.GetEnum<LongPressMode>("long-press") ?? p.LongPress;
-                });
-                return 0;
-            case "rm":
-                if (string.Equals(name, AppConfig.DefaultPresetName, StringComparison.OrdinalIgnoreCase))
-                    throw new UsageException("the default preset can't be removed");
-                var removed = false;
-                ConfigStore.Update(AppPaths.ConfigFile, c => removed = c.Presets.Remove(name));
-                return removed ? 0 : 1;
-            default:
-                throw new UsageException($"unknown preset command '{verb}'");
-        }
+            if (c.GetApp(cl.Get("list"), index) is not { } e)
+                return;
+            found = true;
+            if (cl.Has("args")) e.Args = Blank(cl.Get("args"));
+            if (cl.Has("workdir")) e.WorkDir = Blank(cl.Get("workdir"));
+            if (cl.Has("admin")) e.Admin = true;
+            if (cl.Has("no-admin")) e.Admin = false;
+            e.OnRunning = cl.GetEnum<OnRunning>("on-running") ?? e.OnRunning;
+            e.KillMode = cl.GetEnum<KillMode>("kill-mode") ?? e.KillMode;
+            e.Indicator = cl.GetEnum<IndicatorStyle>("indicator") ?? e.Indicator;
+            e.LongPress = cl.GetEnum<LongPressMode>("long-press") ?? e.LongPress;
+        });
+        if (!found)
+            throw new UsageException($"no app at index {index}");
+        return 0;
     }
 
     private static int Import(CommandLine cl)
@@ -250,6 +257,28 @@ internal static class Program
         var version = InstalledPluginVersion() ?? typeof(Program).Assembly.GetName().Version!.ToString();
         File.WriteAllBytes(output, SlotPageBuilder.Build(name, model, null, columns, rows, version));
         Console.WriteLine($"wrote {output} ({columns}x{rows}, {model})");
+        return 0;
+    }
+
+    /// <summary>
+    /// Build step: writes one launcher profile per supported model into <c>--out</c> and replaces the <c>Profiles</c>
+    /// array of the plugin manifest given by <c>--manifest</c>.
+    /// </summary>
+    private static int Profiles(CommandLine cl)
+    {
+        var output = cl.Get("out") ?? throw new UsageException("--out is required");
+        var manifestPath = cl.Get("manifest") ?? throw new UsageException("--manifest is required");
+        var manifest = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(manifestPath))!.AsObject();
+        var version = manifest["Version"]?.GetValue<string>() ?? typeof(Program).Assembly.GetName().Version!.ToString();
+        Directory.CreateDirectory(output);
+        foreach (var profile in LauncherProfiles.All)
+        {
+            var file = Path.Combine(output, profile.Name + ".streamDeckProfile");
+            File.WriteAllBytes(file, SlotPageBuilder.Build("Managed App Launcher", profile.Model, null, profile.Columns, profile.Rows, version));
+            Console.WriteLine($"wrote {file} ({profile.Columns}x{profile.Rows}, {profile.Model})");
+        }
+        manifest["Profiles"] = LauncherProfiles.ManifestEntries();
+        File.WriteAllText(manifestPath, manifest.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         return 0;
     }
 

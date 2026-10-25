@@ -21,11 +21,11 @@ public sealed class Win32ProcessSource : IProcessSource
             var pids = EnumeratePids();
             var result = new List<ProcessInfo>(pids.Count);
             var seen = new HashSet<int>();
-            foreach (var pid in pids)
+            foreach (var (pid, parent) in pids)
             {
                 if (pid is 0 or 4 || !seen.Add(pid))
                     continue;
-                var info = Query(pid);
+                var info = Query(pid, parent);
                 if (info is not null)
                     result.Add(info);
             }
@@ -35,7 +35,7 @@ public sealed class Win32ProcessSource : IProcessSource
         }
     }
 
-    private ProcessInfo? Query(int pid)
+    private ProcessInfo? Query(int pid, int parent)
     {
         using var handle = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (handle.IsInvalid)
@@ -47,7 +47,7 @@ public sealed class Win32ProcessSource : IProcessSource
         if (cache.TryGetValue(pid, out var cached) && cached.StartTime == start)
             return cached;
 
-        var info = new ProcessInfo(pid, QueryPath(handle), QueryAumid(handle), start);
+        var info = new ProcessInfo(pid, QueryPath(handle), QueryAumid(handle), start, QueryElevated(handle), parent);
         cache[pid] = info;
         return info;
     }
@@ -57,6 +57,15 @@ public sealed class Win32ProcessSource : IProcessSource
         var sb = new StringBuilder(1024);
         var size = sb.Capacity;
         return Native.QueryFullProcessImageNameW(handle, 0, sb, ref size) ? sb.ToString(0, size) : null;
+    }
+
+    /// <summary>A token the caller may not even query belongs to a more privileged process; that counts as elevated.</summary>
+    private static bool QueryElevated(SafeProcessHandle handle)
+    {
+        if (!Native.OpenProcessToken(handle, Native.TOKEN_QUERY, out var token))
+            return true;
+        using (token)
+            return !Native.GetTokenInformation(token, Native.TokenElevation, out var elevated, sizeof(int), out _) || elevated != 0;
     }
 
     private static string? QueryAumid(SafeProcessHandle handle)
@@ -70,19 +79,19 @@ public sealed class Win32ProcessSource : IProcessSource
         return rc == 0 ? sb.ToString() : null;
     }
 
-    private static List<int> EnumeratePids()
+    private static List<(int Pid, int Parent)> EnumeratePids()
     {
         using var snap = Native.CreateToolhelp32Snapshot(Native.TH32CS_SNAPPROCESS, 0);
         if (snap.IsInvalid)
             throw new Win32Exception(Marshal.GetLastWin32Error());
 
-        var pids = new List<int>(512);
+        var pids = new List<(int, int)>(512);
         var entry = new Native.PROCESSENTRY32W { dwSize = (uint)Marshal.SizeOf<Native.PROCESSENTRY32W>() };
         if (!Native.Process32FirstW(snap, ref entry))
             return pids;
         do
         {
-            pids.Add((int)entry.th32ProcessID);
+            pids.Add(((int)entry.th32ProcessID, (int)entry.th32ParentProcessID));
         } while (Native.Process32NextW(snap, ref entry));
         return pids;
     }
@@ -97,6 +106,8 @@ public sealed class Win32ProcessSource : IProcessSource
         public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
         public const uint TH32CS_SNAPPROCESS = 0x2;
         public const int ERROR_INSUFFICIENT_BUFFER = 122;
+        public const uint TOKEN_QUERY = 0x0008;
+        public const int TokenElevation = 20;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct PROCESSENTRY32W
@@ -128,6 +139,12 @@ public sealed class Win32ProcessSource : IProcessSource
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
         public static extern int GetApplicationUserModelId(SafeProcessHandle process, ref uint length, StringBuilder? aumid);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool OpenProcessToken(SafeProcessHandle process, uint access, out SafeProcessHandle token);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool GetTokenInformation(SafeProcessHandle token, int infoClass, out int info, int length, out int returned);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern SafeSnapshotHandle CreateToolhelp32Snapshot(uint flags, uint pid);

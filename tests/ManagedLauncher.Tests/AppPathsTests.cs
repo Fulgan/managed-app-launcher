@@ -36,4 +36,18 @@ public class AppPathsTests
         using var tmp = new TempDir();
         Assert.Empty(AppPaths.MigrateLegacy(tmp.MakeDir("old"), Path.Combine(tmp.Path, "new")));
     }
+
+    [Fact]
+    public void MigrationSkipsFilesAlreadyWrittenMeanwhile()
+    {
+        using var tmp = new TempDir();
+        var from = tmp.MakeDir("old");
+        var to = tmp.MakeDir("new");
+        File.WriteAllText(Path.Combine(from, "config.json"), "{}");
+        File.WriteAllText(Path.Combine(from, "devices.json"), "[]");
+        File.WriteAllText(Path.Combine(to, "devices.json"), "[{}]");
+
+        Assert.Equal(["config.json"], AppPaths.MigrateLegacy(from, to));
+        Assert.Equal("[{}]", File.ReadAllText(Path.Combine(to, "devices.json")));
+    }
 }

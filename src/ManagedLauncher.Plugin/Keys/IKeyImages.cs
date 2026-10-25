@@ -21,12 +21,18 @@ public interface IKeyImages
     /// <summary>Open Launcher key labelled with <paramref name="list"/>.</summary>
     string Open(string list);
 
-    void Invalidate();
 }
 
 public sealed class ShellKeyImages(StaWorker sta) : IKeyImages
 {
-    private readonly ConcurrentDictionary<string, Bitmap?> icons = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// One load per icon file version: concurrent requests share it, and a changed file (new write time) gets a new
+    /// entry, so config reloads need not drop the cache.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, Lazy<Task<Bitmap?>>> icons = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>GDI+ bitmaps can't be drawn from two threads at once.</summary>
+    private readonly Lock render = new();
     private readonly ConcurrentDictionary<(int, int), string> nextPages = new();
 
     public string NextPage(int page, int pages) =>
@@ -52,31 +58,29 @@ public sealed class ShellKeyImages(StaWorker sta) : IKeyImages
     {
         var source = customIcon ?? visual.IconSource;
         Bitmap? icon = null;
-        if (source is not null && !icons.TryGetValue(source, out icon))
+        if (source is not null)
         {
-            icon = await sta.RunAsync(() => customIcon is not null
-                ? IconExtractor.LoadImageFile(customIcon)
-                : IconExtractor.ExtractBest(source)).ConfigureAwait(false);
-            icons[source] = icon;
+            var load = icons.GetOrAdd(CacheKey(source), _ => new Lazy<Task<Bitmap?>>(() => sta.RunAsync(() => customIcon is not null
+                ? IconExtractor.LoadCustomIcon(customIcon)
+                : IconExtractor.ExtractBest(source))));
+            icon = await load.Value.ConfigureAwait(false);
         }
 
         byte[] png;
-        lock (icons)
-        {
-            if (source is not null && !icons.TryGetValue(source, out icon))
-                icon = null;
+        lock (render)
             png = KeyRenderer.RenderPng(icon, visual);
-        }
         return Convert.ToBase64String(png);
     }
 
-    public void Invalidate()
+    private static string CacheKey(string source)
     {
-        lock (icons)
+        try
         {
-            foreach (var icon in icons.Values)
-                icon?.Dispose();
-            icons.Clear();
+            return File.Exists(source) ? $"{source}|{File.GetLastWriteTimeUtc(source).Ticks}" : source;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return source;
         }
     }
 }

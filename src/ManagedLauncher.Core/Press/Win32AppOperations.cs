@@ -19,8 +19,8 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
             if (target.Kind == TargetKind.Aumid)
                 return elevated ? OperationResult.Fail("packaged apps can't run as admin") : ActivatePackaged(target.Aumid!, options.Args);
 
-            Process.Start(BuildStartInfo(target, options, elevated))?.Dispose();
-            return OperationResult.Ok;
+            using var started = Process.Start(BuildStartInfo(target, options, elevated));
+            return OperationResult.Started(started?.Id);
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == ERROR_CANCELLED)
         {
@@ -51,7 +51,7 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
         else
         {
             file = target.LaunchFile ?? throw new InvalidOperationException("target has no launch file");
-            if (target.Kind != TargetKind.Lnk)
+            if (target.Kind is not (TargetKind.Lnk or TargetKind.Url))
                 workDir ??= Path.GetDirectoryName(file);
         }
 
@@ -72,8 +72,8 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
         var manager = (IApplicationActivationManager)new ApplicationActivationManager();
         try
         {
-            var hr = manager.ActivateApplication(aumid, args, 0, out _);
-            return hr == 0 ? OperationResult.Ok : OperationResult.Fail($"activation failed 0x{hr:X8}");
+            var hr = manager.ActivateApplication(aumid, args, 0, out var pid);
+            return hr == 0 ? OperationResult.Started((int)pid) : OperationResult.Fail($"activation failed 0x{hr:X8}");
         }
         finally
         {
@@ -91,12 +91,17 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
     }
 
     /// <summary>
-    /// Asks each process to close via WM_CLOSE on its windows, waits, then kills what is left. Processes the
-    /// unelevated plugin may not terminate are killed by an elevated <c>taskkill</c> (one UAC prompt).
+    /// Asks each process to close via WM_CLOSE on its windows, waits, then kills what is left. Never escalates:
+    /// a process the unelevated plugin may not terminate (an elevated app) is reported, not killed. Processes
+    /// under the Windows folder are never touched, and a process is only acted on while its start time proves
+    /// it is the one the snapshot saw.
     /// </summary>
     public async Task<OperationResult> CloseAsync(IReadOnlyList<ProcessInfo> processes, TimeSpan timeout)
     {
-        var live = processes.Select(Open).OfType<Process>().ToList();
+        var candidates = processes.Where(p => !IsSystemProcess(p)).ToList();
+        if (candidates.Count == 0)
+            return OperationResult.Fail("only Windows system processes matched; nothing closed");
+        var live = candidates.Select(Open).OfType<Process>().ToList();
         try
         {
             foreach (var p in live)
@@ -113,7 +118,7 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
                 }
             }
 
-            var denied = new List<int>();
+            var denied = 0;
             foreach (var p in live.Where(p => !HasExited(p)))
             {
                 try
@@ -122,16 +127,13 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
                 }
                 catch (Win32Exception ex) when (ex.NativeErrorCode == ERROR_ACCESS_DENIED)
                 {
-                    denied.Add(p.Id);
+                    denied++;
                 }
                 catch (InvalidOperationException)
                 {
                 }
             }
-
-            var unopened = processes.Where(info => live.All(p => p.Id != info.Pid) && IsAlive(info.Pid)).Select(i => i.Pid);
-            denied.AddRange(unopened);
-            return denied.Count == 0 ? OperationResult.Ok : ElevatedKill(denied);
+            return denied == 0 ? OperationResult.Ok : OperationResult.Fail($"{denied} process(es) run as admin and can't be closed from the deck");
         }
         finally
         {
@@ -139,6 +141,12 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
                 p.Dispose();
         }
     }
+
+    private static readonly string WindowsFolder =
+        Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+    private static bool IsSystemProcess(ProcessInfo info) =>
+        info.ExePath is null || info.ExePath.StartsWith(WindowsFolder, StringComparison.OrdinalIgnoreCase);
 
     private Process? Open(ProcessInfo info)
     {
@@ -159,7 +167,7 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
         return null;
     }
 
-    /// <summary>Guards against a recycled pid: the process must be the one the snapshot saw.</summary>
+    /// <summary>Guards against a recycled pid: the process must provably be the one the snapshot saw.</summary>
     private static bool StartTimeMatches(Process p, ProcessInfo info)
     {
         try
@@ -168,7 +176,7 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
-            return true;
+            return false;
         }
     }
 
@@ -181,43 +189,6 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
             return false;
-        }
-    }
-
-    private static bool IsAlive(int pid)
-    {
-        try
-        {
-            using var p = Process.GetProcessById(pid);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
-    }
-
-    private static OperationResult ElevatedKill(IEnumerable<int> pids)
-    {
-        var info = new ProcessStartInfo("taskkill.exe", "/F " + string.Join(' ', pids.Select(p => $"/PID {p}")))
-        {
-            UseShellExecute = true,
-            Verb = "runas",
-            WindowStyle = ProcessWindowStyle.Hidden,
-        };
-        try
-        {
-            using var p = Process.Start(info);
-            p?.WaitForExit(10_000);
-            return OperationResult.Ok;
-        }
-        catch (Win32Exception ex) when (ex.NativeErrorCode == ERROR_CANCELLED)
-        {
-            return OperationResult.Fail("elevation cancelled");
-        }
-        catch (Win32Exception ex)
-        {
-            return OperationResult.Fail(ex.Message);
         }
     }
 
