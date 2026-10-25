@@ -1,0 +1,7 @@
+[
+  { "name": "Managed App Launcher", "label": "Stream Deck", "deviceType": 0, "model": "20GBA9901", "columns": 5, "rows": 3 },
+  { "name": "Managed App Launcher Mini", "label": "Mini", "deviceType": 1, "model": "20GAI9902", "columns": 3, "rows": 2 },
+  { "name": "Managed App Launcher XL", "label": "XL", "deviceType": 2, "model": "20GAT9902", "columns": 8, "rows": 4 },
+  { "name": "Managed App Launcher Plus", "label": "+", "deviceType": 7, "model": "20GBD9901", "columns": 4, "rows": 2 },
+  { "name": "Managed App Launcher Neo", "label": "Neo", "deviceType": 9, "model": "20GBJ9901", "columns": 4, "rows": 2 }
+]

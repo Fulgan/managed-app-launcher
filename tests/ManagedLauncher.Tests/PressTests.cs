@@ -26,7 +26,7 @@ public class PressTests
     [InlineData(false, true, OnRunning.Relaunch, PressDecision.Relaunch)]
     [InlineData(false, true, OnRunning.None, PressDecision.Nothing)]
     [InlineData(true, true, OnRunning.Auto, PressDecision.Close)]
-    [InlineData(true, false, OnRunning.Auto, PressDecision.LaunchAdmin)]
+    [InlineData(true, false, OnRunning.Auto, PressDecision.Launch)]
     public void PlansFromStateAndOptions(bool isLong, bool running, OnRunning onRunning, PressDecision expected)
     {
         Assert.Equal(expected, ActionPlanner.Plan(isLong, running, Options(onRunning), Exe));
@@ -48,15 +48,16 @@ public class PressTests
     }
 
     [Fact]
-    public void AdminPresetLaunchesElevatedOnShortPress()
+    public void AdminOptionLaunchesElevatedOnShortPress()
     {
         Assert.Equal(PressDecision.LaunchAdmin, ActionPlanner.Plan(false, false, Options(admin: true), Exe));
     }
 
     [Fact]
-    public void LongPressOnStoppedPackagedAppAlerts()
+    public void LongPressOnStoppedAppActsAsShortPress()
     {
-        Assert.Equal(PressDecision.Alert, ActionPlanner.Plan(true, false, Options(), Packaged));
+        Assert.Equal(PressDecision.Launch, ActionPlanner.Plan(true, false, Options(), Packaged));
+        Assert.Equal(PressDecision.Launch, ActionPlanner.Plan(true, false, Options(), Exe));
     }
 
     [Fact]
@@ -174,7 +175,7 @@ public class PressTests
     }
 
     [Fact]
-    public void ShortcutLaunchesAsIsUnlessPresetAddsArgs()
+    public void ShortcutLaunchesAsIsUnlessSettingsAddArgs()
     {
         var lnk = new ResolvedTarget(TargetKind.Lnk, @"C:\s\App.lnk", null, @"C:\p\app.exe", @"C:\p\app.exe", "--a", @"C:\p", null, null);
 
@@ -200,18 +201,67 @@ public class PressTests
     [Fact]
     public async Task CloseKillsProcessThatIgnoresCloseRequest()
     {
-        using var child = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ping.exe", "-n 60 127.0.0.1")
-        {
-            CreateNoWindow = true,
-            UseShellExecute = false,
-        })!;
-        var info = new ProcessInfo(child.Id, null, null, child.StartTime.ToUniversalTime());
+        using var tmp = new TempDir();
+        var exe = tmp.File("pinger.exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "PING.EXE"), exe);
+        using var child = StartQuiet(exe);
+        var info = new ProcessInfo(child.Id, exe, null, child.StartTime.ToUniversalTime());
 
         var result = await new Win32AppOperations().CloseAsync([info], TimeSpan.FromMilliseconds(300));
 
         Assert.True(result.Success);
         Assert.True(child.WaitForExit(5000));
     }
+
+    [Fact]
+    public async Task CloseNeverTouchesProcessesUnderWindowsFolder()
+    {
+        var exe = Path.Combine(Environment.SystemDirectory, "PING.EXE");
+        using var child = StartQuiet(exe);
+        try
+        {
+            var info = new ProcessInfo(child.Id, exe, null, child.StartTime.ToUniversalTime());
+
+            var result = await new Win32AppOperations().CloseAsync([info], TimeSpan.FromMilliseconds(100));
+
+            Assert.False(result.Success);
+            Assert.False(child.HasExited);
+        }
+        finally
+        {
+            child.Kill();
+            child.WaitForExit(5000);
+        }
+    }
+
+    [Fact]
+    public async Task CloseSkipsRecycledPid()
+    {
+        using var tmp = new TempDir();
+        var exe = tmp.File("pinger.exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "PING.EXE"), exe);
+        using var child = StartQuiet(exe);
+        try
+        {
+            var stale = new ProcessInfo(child.Id, exe, null, child.StartTime.ToUniversalTime().AddMinutes(-5));
+
+            await new Win32AppOperations().CloseAsync([stale], TimeSpan.FromMilliseconds(100));
+
+            Assert.False(child.HasExited);
+        }
+        finally
+        {
+            child.Kill();
+            child.WaitForExit(5000);
+        }
+    }
+
+    private static System.Diagnostics.Process StartQuiet(string exe) =>
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, "-n 60 127.0.0.1")
+        {
+            CreateNoWindow = true,
+            UseShellExecute = false,
+        })!;
 
     private sealed class FakeOperations : IAppOperations
     {

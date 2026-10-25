@@ -58,6 +58,29 @@ public class ProcessTests
     }
 
     [Fact]
+    public void TargetInDriveRootMatchesOnlyItsExactPath()
+    {
+        var snapshot = new ProcessSnapshot([
+            new ProcessInfo(1, @"C:\Windows\System32\svchost.exe", null, T0),
+            new ProcessInfo(2, @"C:\svchost.exe", null, T0)]);
+
+        Assert.Equal([2], snapshot.Find(PathTarget(@"C:\svchost.exe")).Select(p => p.Pid));
+    }
+
+    [Fact]
+    public void TreeFollowsChildrenOfExitedParentButNotRecycledPids()
+    {
+        var snapshot = new ProcessSnapshot([
+            new ProcessInfo(11, @"C:\a\child.exe", null, T0.AddSeconds(1), ParentPid: 10),
+            new ProcessInfo(12, @"C:\b\grandchild.exe", null, T0.AddSeconds(2), ParentPid: 11),
+            new ProcessInfo(13, @"C:\c\old.exe", null, T0.AddSeconds(-30), ParentPid: 10),
+            new ProcessInfo(14, @"C:\d\unrelated.exe", null, T0.AddSeconds(3), ParentPid: 99),
+        ]);
+
+        Assert.Equal([11, 12], snapshot.TreeOf(10, T0).Select(p => p.Pid).Order());
+    }
+
+    [Fact]
     public void UnlaunchableTargetIsNeverRunning()
     {
         var snapshot = new ProcessSnapshot([new ProcessInfo(1, null, null, T0)]);
@@ -70,10 +93,10 @@ public class ProcessTests
     {
         var source = new FakeSource();
         var tracker = new ProcessTracker(source);
-        var changes = new List<(string, bool)>();
-        tracker.RunningChanged += (k, r) => changes.Add((k, r));
-        tracker.Subscribe("a", () => PathTarget(@"C:\a.exe"));
-        tracker.Subscribe("b", () => PathTarget(@"C:\b.exe"));
+        var changes = new List<(string, RunState)>();
+        tracker.StateChanged += (k, r) => changes.Add((k, r));
+        tracker.Subscribe("a", s => s.IsRunning(PathTarget(@"C:\a.exe")) ? RunState.Running : RunState.Stopped);
+        tracker.Subscribe("b", s => s.IsRunning(PathTarget(@"C:\b.exe")) ? RunState.Running : RunState.Stopped);
 
         source.Processes = [new ProcessInfo(1, @"C:\a.exe", null, T0)];
         tracker.Refresh();
@@ -82,7 +105,7 @@ public class ProcessTests
         tracker.Refresh();
 
         Assert.Equal(3, source.Calls);
-        Assert.Equal([("a", true), ("b", false), ("a", false)], changes);
+        Assert.Equal([("a", RunState.Running), ("b", RunState.Stopped), ("a", RunState.Stopped)], changes);
     }
 
     [Fact]

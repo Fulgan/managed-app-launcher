@@ -25,30 +25,22 @@ public sealed class KeyController
     public const string ManageAction = "com.fulgan.managedapplauncher.manage";
     private static readonly DeviceSize DefaultSize = new(5, 3);
 
-    /// <summary>Bundled launcher profiles by device layout; names match the manifest's <c>Profiles</c> entries.</summary>
-    private static readonly Dictionary<DeviceSize, string> LauncherProfiles = new()
-    {
-        [new DeviceSize(5, 3)] = "profiles/Managed App Launcher",
-        [new DeviceSize(8, 4)] = "profiles/Managed App Launcher XL",
-        [new DeviceSize(3, 2)] = "profiles/Managed App Launcher Mini",
-    };
-
     private readonly IStreamDeck deck;
     private readonly Func<AppConfig> config;
     private readonly ProcessTracker tracker;
     private readonly PressTimer timer;
-    private readonly PressExecutor executor;
     private readonly IKeyImages images;
     private readonly TimeProvider time;
     private readonly Action<string> log;
     private readonly ConcurrentDictionary<string, Key> keys = new();
     private readonly ConcurrentDictionary<string, DeviceSize> devices = new();
+    private readonly ConcurrentDictionary<string, int> deviceTypes = new();
     private readonly ConcurrentDictionary<string, int> pages = new();
     private readonly ConcurrentDictionary<string, string> deviceLists = new();
     private readonly ConcurrentDictionary<string, bool> openedFromProfile = new();
     private readonly ConcurrentDictionary<string, bool> connected = new();
     private readonly ConcurrentDictionary<string, string> appliedDecks = new();
-    private readonly ConcurrentDictionary<string, DateTimeOffset> launches = new(StringComparer.OrdinalIgnoreCase);
+    private readonly AppRuntime runtime;
 
     public KeyController(
         IStreamDeck deck, Func<AppConfig> config, ProcessTracker tracker, PressTimer timer,
@@ -58,11 +50,11 @@ public sealed class KeyController
         this.config = config;
         this.tracker = tracker;
         this.timer = timer;
-        this.executor = executor;
         this.images = images;
         this.log = log;
         this.time = time ?? TimeProvider.System;
-        tracker.RunningChanged += (context, _) => Fire(() => RefreshAsync(context, force: false));
+        runtime = new AppRuntime(executor, this.time);
+        tracker.StateChanged += (context, _) => Fire(() => RefreshAsync(context, force: false));
     }
 
     public readonly record struct DeviceSize(int Columns, int Rows)
@@ -83,15 +75,24 @@ public sealed class KeyController
                 if (device.TryGetProperty("id", out var id) && id.GetString() is { } deviceId && ParseSize(device) is { } size)
                 {
                     devices[deviceId] = size;
+                    if (TryGetInt(device, "type", out var type))
+                        deviceTypes[deviceId] = type;
                     connected[deviceId] = true;
                     Seen(deviceId, device, size);
                 }
             }
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException or KeyNotFoundException)
         {
             log($"bad registration info: {ex.Message}");
         }
+    }
+
+    /// <summary>Whether any of these processes shows a main window yet; ends the starting state.</summary>
+    public Func<IReadOnlyCollection<int>, bool> HasWindow
+    {
+        get => runtime.HasWindow;
+        set => runtime.HasWindow = value;
     }
 
     /// <summary>Opaque plugin id from registration; the context for requests not tied to a key.</summary>
@@ -129,7 +130,7 @@ public sealed class KeyController
     private LauncherLayout LayoutFor(string? device, string list)
     {
         var size = devices.GetValueOrDefault(device ?? "", DefaultSize);
-        return new LauncherLayout(size.Keys, config().GetList(list).Count, openedFromProfile.GetValueOrDefault(device ?? ""));
+        return new LauncherLayout(size.Keys, size.Columns, config().LayoutOf(list), openedFromProfile.GetValueOrDefault(device ?? ""));
     }
 
     public async Task HandleAsync(StreamDeckEvent ev)
@@ -139,6 +140,8 @@ public sealed class KeyController
             if (ev.DeviceInfo is { ValueKind: JsonValueKind.Object } info && ParseSize(info) is { } size)
             {
                 devices[ev.Device] = size;
+                if (TryGetInt(info, "type", out var type))
+                    deviceTypes[ev.Device] = type;
                 Seen(ev.Device, info, size);
             }
             connected[ev.Device] = true;
@@ -158,9 +161,9 @@ public sealed class KeyController
         {
             case "willAppear":
                 var key = keys.AddOrUpdate(ev.Context, _ => Key.From(ev), (_, k) => k.Update(ev));
-                tracker.Subscribe(ev.Context, () => Resolve(key));
+                tracker.Subscribe(ev.Context, snapshot => StateOf(key, snapshot));
                 await FollowRenameAsync(key).ConfigureAwait(false);
-                await RefreshAsync(ev.Context, force: true).ConfigureAwait(false);
+                Fire(() => RefreshAsync(ev.Context, force: true));
                 break;
             case "willDisappear":
                 if (keys.TryRemove(ev.Context, out var gone) && gone.Action == SlotAction
@@ -202,7 +205,6 @@ public sealed class KeyController
 
     public async Task OnConfigChangedAsync()
     {
-        images.Invalidate();
         await ApplyDecksAsync().ConfigureAwait(false);
         await Task.WhenAll(keys.Values.Select(FollowRenameAsync)).ConfigureAwait(false);
         await Task.WhenAll(keys.Keys.Select(c => RefreshAsync(c, force: true))).ConfigureAwait(false);
@@ -242,7 +244,7 @@ public sealed class KeyController
     private async Task ShowDeckListAsync(string device, string list)
     {
         var size = devices.GetValueOrDefault(device, DefaultSize);
-        if (!LauncherProfiles.TryGetValue(size, out var profile))
+        if (LauncherProfileFor(device, size) is not { } profile)
         {
             log($"device {device}: no launcher profile for a {size.Columns}x{size.Rows} device");
             return;
@@ -262,7 +264,7 @@ public sealed class KeyController
             return new KeyAssignment(KeyRole.App, -1, 0, 1);
         var list = ListOf(key);
         if (key.FixedSlot is { } slot)
-            return slot < config().GetList(list).Count ? new KeyAssignment(KeyRole.App, slot, 0, 1) : new KeyAssignment(KeyRole.Empty, -1, 0, 1);
+            return config().GetApp(list, slot) is not null ? new KeyAssignment(KeyRole.App, slot, 0, 1) : new KeyAssignment(KeyRole.Empty, -1, 0, 1);
 
         var size = devices.GetValueOrDefault(key.Device ?? "", DefaultSize);
         if (key.Column is not { } col || key.Row is not { } row)
@@ -284,7 +286,8 @@ public sealed class KeyController
         return string.IsNullOrWhiteSpace(entry?.Target) ? null : entry;
     }
 
-    private ResolvedTarget? Resolve(Key key) => EntryFor(key) is { } entry ? TargetResolver.Resolve(entry) : null;
+    internal RunState StateOf(Key key, ProcessSnapshot snapshot) =>
+        EntryFor(key) is { } entry ? runtime.StateOf(entry, snapshot) : RunState.Stopped;
 
     private void OnKeyDown(Key key)
     {
@@ -321,7 +324,7 @@ public sealed class KeyController
         }
 
         var entry = EntryFor(key);
-        var options = entry is null ? null : LaunchOptions.Resolve(config(), entry, log);
+        var options = entry is null ? null : LaunchOptions.Resolve(entry);
         var hasLong = !key.IsInMultiAction && options?.LongPress == LongPressMode.Auto;
         timer.KeyDown(
             key.Context,
@@ -348,7 +351,7 @@ public sealed class KeyController
     {
         var device = key.Device ?? "";
         var size = devices.GetValueOrDefault(device, DefaultSize);
-        if (!LauncherProfiles.TryGetValue(size, out var profile))
+        if (LauncherProfileFor(device, size) is not { } profile)
         {
             log($"no launcher profile for a {size.Columns}x{size.Rows} device");
             await deck.ShowAlertAsync(key.Context).ConfigureAwait(false);
@@ -389,21 +392,11 @@ public sealed class KeyController
             return;
         }
 
-        var target = TargetResolver.Resolve(entry);
-        var options = LaunchOptions.Resolve(cfg, entry, log);
-        var running = tracker.Refresh().Find(target);
-        var targetKey = target.MatchPath ?? target.Aumid ?? target.LaunchFile ?? entry.Target;
-        var decision = ActionPlanner.Plan(isLong, running.Count > 0, options, target, IsStarting(targetKey, running, cfg));
-        log($"{key.Describe()}: {(isLong ? "long" : "short")} press, running={running.Count} → {decision}");
-
-        if (isLong && decision is PressDecision.Close or PressDecision.LaunchAdmin)
-            await deck.ShowOkAsync(key.Context).ConfigureAwait(false);
-
-        var result = await executor.ExecuteAsync(decision, target, options, running, TimeSpan.FromMilliseconds(cfg.CloseTimeoutMs))
-            .ConfigureAwait(false);
-
-        if (result.Success && decision is PressDecision.Launch or PressDecision.LaunchAdmin or PressDecision.Relaunch or PressDecision.FocusOrRelaunch)
-            launches[targetKey] = time.GetUtcNow();
+        var outcome = await runtime.PressAsync(entry, isLong, tracker.Refresh(), cfg, () => deck.ShowOkAsync(key.Context)).ConfigureAwait(false);
+        var (decision, result) = (outcome.Decision, outcome.Result);
+        log($"{key.Describe()}: {(isLong ? "long" : "short")} press, running={outcome.Running} → {decision}");
+        if (outcome.Launched)
+            await RefreshAsync(key.Context, force: false).ConfigureAwait(false);
 
         if (!result.Success)
         {
@@ -441,19 +434,24 @@ public sealed class KeyController
         await RefreshDeviceAsync(device).ConfigureAwait(false);
     }
 
-    private bool IsStarting(string targetKey, IReadOnlyList<ProcessInfo> running, AppConfig cfg)
-    {
-        var grace = TimeSpan.FromMilliseconds(cfg.LaunchGraceMs);
-        var now = time.GetUtcNow();
-        if (launches.TryGetValue(targetKey, out var launched) && now - launched < grace)
-            return true;
-        return running.Any(p => now.UtcDateTime - p.StartTime < grace);
-    }
-
+    /// <summary>One refresh per key at a time, so a slower, older refresh can never paint over a newer one.</summary>
     private async Task RefreshAsync(string context, bool force)
     {
         if (!keys.TryGetValue(context, out var key) || key.IsInMultiAction)
             return;
+        await key.Gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await RefreshLockedAsync(key, force).ConfigureAwait(false);
+        }
+        finally
+        {
+            key.Gate.Release();
+        }
+    }
+
+    private async Task RefreshLockedAsync(Key key, bool force)
+    {
 
         if (key.Action == OpenAction)
         {
@@ -494,8 +492,8 @@ public sealed class KeyController
         }
 
         var target = TargetResolver.Resolve(entry);
-        var options = LaunchOptions.Resolve(config(), entry, log);
-        var visual = new KeyVisual(target.IconSource, tracker.Current.IsRunning(target), options.Indicator, !target.IsLaunchable);
+        var options = LaunchOptions.Resolve(entry);
+        var visual = new KeyVisual(target.IconSource, runtime.StateOf(entry, target, tracker.Current), options.Indicator, !target.IsLaunchable);
         var customIcon = entry.Icon is null ? null : TargetResolver.Expand(entry.Icon);
         await SetIfChangedAsync(key, entry.Title, visual, null, force, customIcon).ConfigureAwait(false);
     }
@@ -506,14 +504,14 @@ public sealed class KeyController
         var look = new Look(visual, fixedImage?.Name);
         if (force || look != key.LastLook)
         {
-            key.LastLook = look;
             var image = fixedImage?.Png ?? (visual is null ? null : await images.RenderAsync(visual, customIcon).ConfigureAwait(false));
             await deck.SetImageAsync(key.Context, image).ConfigureAwait(false);
+            key.LastLook = look;
         }
         if (force || title != key.LastTitle)
         {
-            key.LastTitle = title;
             await deck.SetTitleAsync(key.Context, title).ConfigureAwait(false);
+            key.LastTitle = title;
         }
     }
 
@@ -532,7 +530,6 @@ public sealed class KeyController
             ["page"] = assignment.Page + 1,
             ["pages"] = assignment.Pages,
             ["apps"] = cfg.GetList(ListOf(key)).Count,
-            ["presets"] = new JsonArray(cfg.Presets.Keys.Order().Select(p => (JsonNode)p!).ToArray()),
             ["lists"] = new JsonArray(cfg.Lists.Keys.Order().Select(p => (JsonNode)p!).ToArray()),
             ["homeList"] = cfg.HomeList,
             ["list"] = ListOf(key),
@@ -548,14 +545,30 @@ public sealed class KeyController
         return deck.SendToPropertyInspectorAsync(key.Action, key.Context, payload);
     }
 
+    /// <summary>The bundled launcher profile for this device: by its type, else by its key layout; null when none fits.</summary>
+    private string? LauncherProfileFor(string device, DeviceSize size) =>
+        LauncherProfiles.For(deviceTypes.TryGetValue(device, out var type) ? type : null, size.Columns, size.Rows)?.ManifestName;
+
     private static DeviceSize? ParseSize(JsonElement element) =>
-        element.TryGetProperty("size", out var size)
-        && size.TryGetProperty("columns", out var c) && size.TryGetProperty("rows", out var r)
-            ? new DeviceSize(c.GetInt32(), r.GetInt32())
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty("size", out var size) && size.ValueKind == JsonValueKind.Object
+        && TryGetInt(size, "columns", out var columns) && TryGetInt(size, "rows", out var rows) && columns > 0 && rows > 0
+            ? new DeviceSize(columns, rows)
             : null;
 
-    private void Fire(Func<Task> work) =>
-        _ = Task.Run(async () =>
+    /// <summary>Integer property, or false for a missing or non-numeric one; never throws.</summary>
+    internal static bool TryGetInt(JsonElement element, string name, out int value)
+    {
+        value = 0;
+        return element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var v)
+            && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out value);
+    }
+
+    private readonly ConcurrentDictionary<Task, byte> running = new();
+
+    /// <summary>Runs work off the event loop; failures are logged, never thrown.</summary>
+    private void Fire(Func<Task> work)
+    {
+        var task = Task.Run(async () =>
         {
             try
             {
@@ -566,20 +579,39 @@ public sealed class KeyController
                 log($"handler failed: {ex}");
             }
         });
+        running[task] = 0;
+        _ = task.ContinueWith(t => running.TryRemove(t, out _), TaskScheduler.Default);
+    }
+
+    /// <summary>Completes once no fired work is left, including work that fired work started.</summary>
+    internal async Task IdleAsync()
+    {
+        while (!running.IsEmpty)
+            await Task.WhenAll(running.Keys).ConfigureAwait(false);
+    }
 
     internal sealed record Look(KeyVisual? Visual, string? Fixed);
 
+    /// <summary>
+    /// A visible key. Event data is kept in one immutable record swapped atomically, because the event loop updates
+    /// it while the tracker and refreshes read it from other threads.
+    /// </summary>
     public sealed class Key
     {
+        private sealed record State(string? Device, JsonElement? Settings, bool IsInMultiAction, int? Column, int? Row);
+
+        private volatile State state = new(null, null, false, null, null);
+
         public required string Context { get; init; }
         public required string Action { get; init; }
-        public string? Device { get; private set; }
-        public JsonElement? Settings { get; private set; }
-        public bool IsInMultiAction { get; private set; }
-        public int? Column { get; private set; }
-        public int? Row { get; private set; }
+        public string? Device => state.Device;
+        public JsonElement? Settings => state.Settings;
+        public bool IsInMultiAction => state.IsInMultiAction;
+        public int? Column => state.Column;
+        public int? Row => state.Row;
         internal Look? LastLook { get; set; }
         internal string? LastTitle { get; set; }
+        internal SemaphoreSlim Gate { get; } = new(1, 1);
 
         /// <summary>Explicit <c>list</c> setting, or null when the key follows its device (see <see cref="ListOf"/>).</summary>
         public string? ListSetting =>
@@ -590,7 +622,7 @@ public sealed class KeyController
 
         /// <summary>Explicit <c>slot</c> setting: the key always shows that app and takes no part in paging.</summary>
         public int? FixedSlot =>
-            Settings is { ValueKind: JsonValueKind.Object } s && s.TryGetProperty("slot", out var v) && v.TryGetInt32(out var slot) && slot >= 0
+            Settings is { } s && TryGetInt(s, "slot", out var slot) && slot >= 0
                 ? slot
                 : null;
 
@@ -599,7 +631,7 @@ public sealed class KeyController
         {
             var node = Settings is { ValueKind: JsonValueKind.Object } s ? JsonNode.Parse(s.GetRawText())! : new JsonObject();
             node["list"] = list;
-            Settings = JsonSerializer.SerializeToElement(node);
+            state = state with { Settings = JsonSerializer.SerializeToElement(node) };
             return node;
         }
 
@@ -608,18 +640,17 @@ public sealed class KeyController
 
         public Key Update(StreamDeckEvent ev)
         {
-            Device = ev.Device ?? Device;
+            var next = state with { Device = ev.Device ?? state.Device };
             if (ev.Settings is { } settings)
-                Settings = settings;
+                next = next with { Settings = settings };
             if (ev.Payload.ValueKind == JsonValueKind.Object)
             {
-                IsInMultiAction = ev.IsInMultiAction;
-                if (ev.Payload.TryGetProperty("coordinates", out var coords))
-                {
-                    Column = coords.GetProperty("column").GetInt32();
-                    Row = coords.GetProperty("row").GetInt32();
-                }
+                next = next with { IsInMultiAction = ev.IsInMultiAction };
+                if (ev.Payload.TryGetProperty("coordinates", out var coords)
+                    && TryGetInt(coords, "column", out var column) && TryGetInt(coords, "row", out var row))
+                    next = next with { Column = column, Row = row };
             }
+            state = next;
             return this;
         }
 

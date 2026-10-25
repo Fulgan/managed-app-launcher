@@ -36,7 +36,7 @@ public static class ConfigStore
             error = null;
             return true;
         }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
         {
             config = null!;
             error = ex.Message;
@@ -68,12 +68,44 @@ public static class ConfigStore
         }
     }
 
-    /// <summary>Load, mutate, save. Used by the CLI, the only regular writer.</summary>
+    /// <summary>Longest wait for another writer before <see cref="Update"/> gives up.</summary>
+    public static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Load, mutate, save under a lock per config file, shared by every process of the Windows session, so the manager, the CLI and parallel Explorer
+    /// verb invocations never overwrite each other's changes. An exception from <paramref name="mutate"/> leaves the
+    /// file untouched.
+    /// </summary>
+    /// <exception cref="IOException">Another writer held the lock for longer than <see cref="LockTimeout"/>.</exception>
     public static AppConfig Update(string path, Action<AppConfig> mutate)
     {
-        var config = Load(path);
-        mutate(config);
-        Save(path, config);
-        return config;
+        using var mutex = new Mutex(false, LockName(path));
+        try
+        {
+            if (!mutex.WaitOne(LockTimeout))
+                throw new IOException("config.json is busy: another program is saving it");
+        }
+        catch (AbandonedMutexException)
+        {
+        }
+        try
+        {
+            var config = Load(path);
+            mutate(config);
+            Save(path, config);
+            return config;
+        }
+        finally
+        {
+            mutex.ReleaseMutex();
+        }
+    }
+
+    /// <summary>Same file, same lock, whatever spelling the path was given in.</summary>
+    private static string LockName(string path)
+    {
+        var full = Path.GetFullPath(path).ToUpperInvariant();
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(full)))[..16];
+        return $@"Local\com.fulgan.managedapplauncher.config.{hash}";
     }
 }

@@ -23,6 +23,7 @@ public static class IconArt
     public static readonly Color BrandBottom = Color.FromArgb(0x00, 0x5B, 0xD6);
     public static readonly Color Green = Color.FromArgb(0x30, 0xD1, 0x58);
     public static readonly Color Red = Color.FromArgb(0xFF, 0x45, 0x3A);
+    public static readonly Color Yellow = Color.FromArgb(0xFF, 0xD6, 0x0A);
 
     /// <summary>Squircle-like corner radius as a share of the tile side, as on iOS app icons.</summary>
     private const float TileCorner = 0.225f;

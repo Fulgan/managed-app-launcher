@@ -8,6 +8,8 @@ using System.Windows.Threading;
 using ManagedLauncher.Core;
 using ManagedLauncher.Core.Config;
 using ManagedLauncher.Core.Paging;
+using ManagedLauncher.Core.Press;
+using ManagedLauncher.Core.Processes;
 using ManagedLauncher.Core.Targets;
 using Microsoft.Win32;
 
@@ -20,7 +22,6 @@ namespace ManagedLauncher.Manager;
 public partial class MainWindow : Window
 {
     private const string AppDragFormat = "ManagedLauncher.AppItem";
-    private static readonly TimeSpan OwnWriteWindow = TimeSpan.FromSeconds(1);
 
     private readonly string path = AppPaths.ConfigFile;
     private readonly DispatcherTimer reloadTimer;
@@ -28,7 +29,12 @@ public partial class MainWindow : Window
     private AppConfig config = new AppConfig().Normalize();
     private ObservableCollection<AppItem> items = [];
     private string currentList = AppConfig.DefaultListName;
-    private DateTime lastOwnWrite = DateTime.MinValue;
+
+    /// <summary>The config as last loaded or saved here; a file change that matches it is this window's own write.</summary>
+    private string knownConfig = "";
+
+    /// <summary>The current list as the window last loaded or saved it; saving refuses when the file no longer matches.</summary>
+    private string listBaseline = "";
     private bool filling;
     private Point dragStart;
     private bool dragArmed;
@@ -36,20 +42,18 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FillCombo(KindBox, ("", "detect from target"), ("lnk", "shortcut"), ("exe", "exe"), ("glob", "versioned path"), ("aumid", "app id (AUMID)"));
-        FillCombo(OnRunningBox, ("", "from preset"), ("auto", "focus, else relaunch"), ("focus", "focus"), ("relaunch", "relaunch"), ("none", "do nothing"));
-        FillCombo(LongPressBox, ("", "from preset"), ("auto", "kill / run as admin"), ("none", "same as short press"));
-        FillCombo(KillModeBox, ("", "from preset"), ("all", "all instances"), ("newest", "newest instance"));
-        FillCombo(AdminBox, ("", "from preset"), ("true", "always"), ("false", "never"));
-        FillCombo(IndicatorBox, ("", "from preset"), ("dot", "dot"), ("border", "border"));
+        FillCombo(KindBox, ("", "detect from target"), ("lnk", "shortcut"), ("exe", "exe"), ("glob", "versioned path"), ("aumid", "app id (AUMID)"), ("url", "link (URL)"));
+        FillCombo(OnRunningBox, ("", "default"), ("auto", "focus, else relaunch"), ("focus", "focus"), ("relaunch", "relaunch"), ("none", "do nothing"));
+        FillCombo(LongPressBox, ("", "default"), ("auto", "close app"), ("none", "same as short press"));
+        FillCombo(KillModeBox, ("", "default"), ("all", "all instances"), ("newest", "newest instance"));
+        FillCombo(AdminBox, ("", "default"), ("true", "always"), ("false", "never"));
+        FillCombo(IndicatorBox, ("", "default"), ("dot", "dot"), ("border", "border"));
+        ShowInherited();
+        StartTestPoll();
+        SteamMenuItem.Visibility = SteamLibrary.InstallPath() is null ? Visibility.Collapsed : Visibility.Visible;
 
         reloadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
-        reloadTimer.Tick += (_, _) =>
-        {
-            reloadTimer.Stop();
-            if (DateTime.UtcNow - lastOwnWrite > OwnWriteWindow)
-                Reload(keepSelection: true);
-        };
+        reloadTimer.Tick += (_, _) => ReloadIfChanged();
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         watcher = new FileSystemWatcher(Path.GetDirectoryName(path)!, Path.GetFileName(path))
@@ -69,24 +73,44 @@ public partial class MainWindow : Window
         base.OnClosed(e);
     }
 
-    private void Reload(bool keepSelection)
+    /// <summary>
+    /// Picks up changes made by other programs. Waits while a list name is being edited or an alert is open, so an
+    /// outside change never commits a half-typed name or shifts the item an alert is about.
+    /// </summary>
+    private void ReloadIfChanged()
     {
+        if (alert is { Task.IsCompleted: false } || ListsBox.Items.OfType<ListRow>().Any(r => r.IsEditing))
+            return;
+        reloadTimer.Stop();
         if (!ConfigStore.TryLoad(path, out var loaded, out var error))
         {
             StatusText.Text = $"config.json is invalid, not reloaded: {error}";
             return;
         }
+        if (Fingerprint(loaded) != knownConfig)
+            Reload(keepSelection: true, loaded);
+    }
+
+    private static string Fingerprint(AppConfig c) => System.Text.Json.JsonSerializer.Serialize(c, ConfigStore.JsonOptions);
+
+    private static string Fingerprint(IReadOnlyList<Entry> list) => System.Text.Json.JsonSerializer.Serialize(list, ConfigStore.JsonOptions);
+
+    private void Reload(bool keepSelection, AppConfig? loaded = null)
+    {
+        if (loaded is null && !ConfigStore.TryLoad(path, out loaded, out var error))
+        {
+            StatusText.Text = $"config.json is invalid, not reloaded: {error}";
+            return;
+        }
         config = loaded;
+        knownConfig = Fingerprint(config);
         var selected = keepSelection ? AppsBox.SelectedIndex : -1;
         if (!config.Lists.ContainsKey(currentList))
             currentList = config.HomeList;
 
         filling = true;
         ListsBox.ItemsSource = ListNames().Select(name => new ListRow(name)).ToList();
-        ListsBox.SelectedItem = ListsBox.Items.Cast<ListRow>().First(r => string.Equals(r.Name, currentList, StringComparison.OrdinalIgnoreCase));
-        PresetBox.Items.Clear();
-        foreach (var preset in config.Presets.Keys.Order())
-            PresetBox.Items.Add(new ComboBoxItem { Content = preset, Tag = preset });
+        ListsBox.SelectedItem = ListsBox.Items.Cast<ListRow>().FirstOrDefault(r => string.Equals(r.Name, currentList, StringComparison.OrdinalIgnoreCase));
         ShowDecks();
         filling = false;
 
@@ -130,43 +154,26 @@ public partial class MainWindow : Window
             return;
         var list = currentList;
         var on = ReturnAfterLaunchBox.IsChecked == true;
-        try
+        TryUpdate(c =>
         {
-            lastOwnWrite = DateTime.UtcNow;
-            config = ConfigStore.Update(path, c =>
-            {
-                if (on)
-                    c.ListOptions[list] = new ListOptions { ReturnAfterLaunch = true };
-                else
-                    c.ListOptions.Remove(list);
-            });
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
-        {
-            StatusText.Text = $"could not save: {ex.Message}";
-        }
+            if (on)
+                c.ListOptions[list] = new ListOptions { ReturnAfterLaunch = true };
+            else
+                c.ListOptions.Remove(list);
+        });
     }
 
     private void Deck_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (filling || sender is not ComboBox { Tag: string id, SelectedItem: ComboBoxItem { Tag: string list } })
             return;
-        try
+        TryUpdate(c =>
         {
-            lastOwnWrite = DateTime.UtcNow;
-            config = ConfigStore.Update(path, c =>
-            {
-                if (list.Length == 0)
-                    c.Decks.Remove(id);
-                else
-                    c.Decks[id] = list;
-            });
-            StatusText.Text = list.Length == 0 ? "Deck freed: it shows whatever profile you pick in Stream Deck." : $"Deck now always shows '{list}'.";
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
-        {
-            StatusText.Text = $"could not save: {ex.Message}";
-        }
+            if (list.Length == 0)
+                c.Decks.Remove(id);
+            else
+                c.Decks[id] = list;
+        });
     }
 
     private void ShowList(int select = -1)
@@ -180,6 +187,7 @@ public partial class MainWindow : Window
         ReturnAfterLaunchBox.IsChecked = config.OptionsOf(currentList).ReturnAfterLaunch;
         filling = wasFilling;
         items = new ObservableCollection<AppItem>(config.GetList(currentList).Select(e => new AppItem(e)));
+        listBaseline = Fingerprint(config.GetList(currentList));
         AppsBox.ItemsSource = items;
         if (select >= 0 && select < items.Count)
             AppsBox.SelectedIndex = select;
@@ -191,6 +199,8 @@ public partial class MainWindow : Window
 
     private void LoadIcon(AppItem item)
     {
+        if (item.IsBreak)
+            return;
         var entry = item.Entry;
         var snapshot = config;
         App.Shell.RunAsync(() => KeyImages.Render(entry, snapshot)).ContinueWith(
@@ -200,25 +210,58 @@ public partial class MainWindow : Window
 
     private void UpdatePages()
     {
-        int Pages(int keys) => new LauncherLayout(keys, items.Count).PageCount;
-        PagesText.Text = $"{items.Count} apps · pages on Stream Deck: {Pages(15)} · XL: {Pages(32)} · Mini: {Pages(6)}";
+        var kinds = items.Select(i => i.Entry.LayoutKind).ToList();
+        var apps = items.Count(i => !i.IsBreak);
+        var pages = LauncherProfiles.All
+            .GroupBy(p => (p.Columns, p.Rows))
+            .Select(g => $"{string.Join(" / ", g.Select(p => p.Label))}: {new LauncherLayout(g.Key.Columns * g.Key.Rows, g.Key.Columns, kinds).PageCount}");
+        PagesText.Text = $"{apps} apps · pages on {string.Join(" · ", pages)}";
     }
 
-    /// <summary>Writes only the current list into the latest file content, so concurrent CLI edits to other lists survive.</summary>
+    /// <summary>Raised inside an update when the file no longer holds the list the window is editing.</summary>
+    private sealed class ListChangedElsewhere : Exception;
+
+    /// <summary>
+    /// Writes the current list into the latest file content, so concurrent edits to other lists survive. Refuses when
+    /// the list itself changed (or was renamed or removed) since the window loaded it, and reloads instead: the
+    /// window's copy is stale and writing it would undo that change.
+    /// </summary>
     private void Save()
     {
         var entries = items.Select(i => i.Entry).ToList();
         var list = currentList;
+        var baseline = listBaseline;
+        if (TryUpdate(c =>
+            {
+                if (!c.Lists.TryGetValue(list, out var current) || Fingerprint(current) != baseline)
+                    throw new ListChangedElsewhere();
+                c.Lists[list] = entries;
+            }))
+        {
+            listBaseline = Fingerprint(entries);
+            UpdatePages();
+        }
+    }
+
+    /// <summary>Applies one change through the shared lock and keeps the window's copy in step; reports failure in the status bar.</summary>
+    private bool TryUpdate(Action<AppConfig> mutate)
+    {
         try
         {
-            lastOwnWrite = DateTime.UtcNow;
-            config = ConfigStore.Update(path, c => c.Lists[list] = entries);
-            UpdatePages();
+            config = ConfigStore.Update(path, mutate);
+            knownConfig = Fingerprint(config);
+            return true;
+        }
+        catch (ListChangedElsewhere)
+        {
+            Reload(keepSelection: true);
+            StatusText.Text = "This list was changed by another program and has been reloaded. Please redo your last change.";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
             StatusText.Text = $"could not save: {ex.Message}";
         }
+        return false;
     }
 
     private AppItem? Selected => AppsBox.SelectedItem as AppItem;
@@ -307,6 +350,7 @@ public partial class MainWindow : Window
             CommitRename(row);
         if (filling || SelectedRow is not { } selected)
             return;
+        StatusText.Text = "";
         currentList = selected.Name;
         ShowList();
     }
@@ -314,8 +358,8 @@ public partial class MainWindow : Window
     private void AddList_Click(object sender, RoutedEventArgs e)
     {
         string? name = null;
-        lastOwnWrite = DateTime.UtcNow;
-        ConfigStore.Update(path, c => c.AddList(name = c.UnusedListName("New list")));
+        if (!TryUpdate(c => c.AddList(name = c.UnusedListName("New list"))))
+            return;
         currentList = name!;
         Reload(keepSelection: false);
         BeginRename();
@@ -326,11 +370,10 @@ public partial class MainWindow : Window
         if (SelectedRow?.Name is not { } source)
             return;
         string? name = null;
-        lastOwnWrite = DateTime.UtcNow;
-        ConfigStore.Update(path, c => name = c.CopyList(source));
+        if (!TryUpdate(c => name = c.CopyList(source)))
+            return;
         currentList = name!;
         Reload(keepSelection: false);
-        StatusText.Text = $"Copied '{source}' to '{name}'.";
         BeginRename();
     }
 
@@ -411,19 +454,9 @@ public partial class MainWindow : Window
         var name = row.Draft.Trim();
         if (name == from)
             return;
-        string? error = config.CheckListName(from, name);
-        if (error is null)
-        {
-            try
-            {
-                lastOwnWrite = DateTime.UtcNow;
-                config = ConfigStore.Update(path, c => error = c.RenameList(from, name));
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
-            {
-                error = $"could not save: {ex.Message}";
-            }
-        }
+        var error = config.CheckListName(from, name);
+        if (error is null && !TryUpdate(c => error = c.RenameList(from, name)))
+            return;
         if (error is not null)
         {
             StatusText.Text = $"Name not changed. {error}";
@@ -432,7 +465,6 @@ public partial class MainWindow : Window
         if (string.Equals(currentList, from, StringComparison.OrdinalIgnoreCase))
             currentList = name;
         Dispatcher.BeginInvoke(() => Reload(keepSelection: true), DispatcherPriority.Background);
-        StatusText.Text = $"Renamed '{from}' to '{name}'. Stream Deck keys that used the old name follow it.";
     }
 
     private async void RemoveList_Click(object sender, RoutedEventArgs e)
@@ -446,10 +478,10 @@ public partial class MainWindow : Window
         }
         var count = config.GetList(name).Count;
         if (!await ConfirmAsync($"Remove list “{name}”?",
-                $"Its {count} app{(count == 1 ? "" : "s")} will be removed too. Keys showing this list fall back to the home list.", "Remove"))
+                $"Its {count} app{(count == 1 ? "" : "s")} will be removed too. Keys set to this list go blank until you pick another list.", "Remove"))
             return;
-        lastOwnWrite = DateTime.UtcNow;
-        ConfigStore.Update(path, c => c.Lists.Remove(name));
+        if (!TryUpdate(c => c.Lists.Remove(name)))
+            return;
         currentList = config.HomeList;
         Reload(keepSelection: false);
     }
@@ -475,7 +507,7 @@ public partial class MainWindow : Window
         var picker = AppPickerWindow.StartMenu();
         picker.Owner = this;
         if (picker.ShowDialog() == true)
-            AddPaths(picker.Chosen, InsertIndex());
+            AddChoices(picker.Chosen, InsertIndex());
     }
 
     private void AddRunning_Click(object sender, RoutedEventArgs e)
@@ -483,19 +515,55 @@ public partial class MainWindow : Window
         var picker = AppPickerWindow.Running();
         picker.Owner = this;
         if (picker.ShowDialog() == true)
-            AddPaths(picker.Chosen, InsertIndex());
+            AddChoices(picker.Chosen, InsertIndex());
+    }
+
+    private void AddSteam_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = AppPickerWindow.SteamGames();
+        picker.Owner = this;
+        if (picker.ShowDialog() == true)
+            AddChoices(picker.Chosen, InsertIndex());
+    }
+
+    /// <summary>Opens a button's choices as a menu above it.</summary>
+    private void OpenMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { ContextMenu: { } menu } button)
+            return;
+        menu.PlacementTarget = button;
+        menu.IsOpen = true;
+    }
+
+    private void AddRowBreak_Click(object sender, RoutedEventArgs e) => AddBreak(ListBreak.Row);
+
+    private void AddPageBreak_Click(object sender, RoutedEventArgs e) => AddBreak(ListBreak.Page);
+
+    private void AddBreak(ListBreak kind)
+    {
+        var at = InsertIndex();
+        var item = new AppItem(new Entry { Break = kind });
+        items.Insert(at, item);
+        Save();
+        RefreshIndexes();
+        AppsBox.SelectedIndex = at;
+        AppsBox.ScrollIntoView(item);
     }
 
     private int InsertIndex() => AppsBox.SelectedIndex >= 0 ? AppsBox.SelectedIndex + 1 : items.Count;
 
-    private void AddPaths(IEnumerable<string> paths, int at)
+    private void AddChoices(IEnumerable<AppPickerWindow.Choice> choices, int at) =>
+        AddPlans(choices.Select(c => c.Entry is { } entry ? new PinAdvisor.PinPlan(entry, []) : PinAdvisor.Plan(c.Target, null)), at);
+
+    private void AddPaths(IEnumerable<string> paths, int at) => AddPlans(paths.Select(p => PinAdvisor.Plan(p, null)), at);
+
+    private void AddPlans(IEnumerable<PinAdvisor.PinPlan> plans, int at)
     {
         var advice = new List<string>();
         var index = Math.Clamp(at, 0, items.Count);
         var first = index;
-        foreach (var p in paths)
+        foreach (var plan in plans)
         {
-            var plan = PinAdvisor.Plan(p, null, null);
             var item = new AppItem(plan.Entry);
             items.Insert(index++, item);
             LoadIcon(item);
@@ -508,7 +576,7 @@ public partial class MainWindow : Window
         AppsBox.SelectedIndex = first;
         AppsBox.ScrollIntoView(items[index - 1]);
         AppsBox.ScrollIntoView(items[first]);
-        StatusText.Text = advice.Count > 0 ? string.Join("   ", advice) : $"Added {index - first} app(s).";
+        StatusText.Text = string.Join("   ", advice);
     }
 
     // Removing and ordering
@@ -523,13 +591,13 @@ public partial class MainWindow : Window
 
     private async Task RemoveSelectedAsync()
     {
-        var index = AppsBox.SelectedIndex;
-        if (index < 0)
+        if (Selected is not { } item)
             return;
-        if (!await ConfirmAsync($"Remove “{items[index].Name}”?",
+        if (!await ConfirmAsync($"Remove “{item.Name}”?",
                 $"It leaves the list “{currentList}” and its key on the deck.", "Remove"))
             return;
-        if (index >= items.Count)
+        var index = items.IndexOf(item);
+        if (index < 0)
             return;
         items.RemoveAt(index);
         Save();
@@ -583,7 +651,7 @@ public partial class MainWindow : Window
         if (Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance)
             return;
         dragArmed = false;
-        DragDrop.DoDragDrop(AppsBox, new DataObject(AppDragFormat, item), DragDropEffects.Move);
+        DragDrop.DoDragDrop(AppsBox, new DataObject(AppDragFormat, item), DragDropEffects.Move | DragDropEffects.Copy);
     }
 
     private void AppsBox_DragOver(object sender, DragEventArgs e)
@@ -591,11 +659,36 @@ public partial class MainWindow : Window
         e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy
             : e.Data.GetDataPresent(AppDragFormat) ? DragDropEffects.Move
             : DragDropEffects.None;
+        ShowDropLine(e);
         e.Handled = true;
+    }
+
+    private void AppsBox_DragLeave(object sender, DragEventArgs e) => DropLine.Visibility = Visibility.Collapsed;
+
+    /// <summary>
+    /// Draws the insertion line between the rows where the drop would land; hidden where dropping changes nothing
+    /// (on or right below the dragged row itself).
+    /// </summary>
+    private void ShowDropLine(DragEventArgs e)
+    {
+        var at = DropIndex(e);
+        var from = e.Data.GetData(AppDragFormat) is AppItem dragged ? items.IndexOf(dragged) : -1;
+        var row = items.Count == 0 ? null : AppsBox.ItemContainerGenerator.ContainerFromIndex(Math.Min(at, items.Count - 1)) as ListBoxItem;
+        if (e.Effects == DragDropEffects.None || row is null || (from >= 0 && (at == from || at == from + 1)))
+        {
+            DropLine.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var origin = row.TranslatePoint(new Point(0, at < items.Count ? 0 : row.ActualHeight), (UIElement)DropLine.Parent);
+        Canvas.SetLeft(DropLine, origin.X + 8);
+        Canvas.SetTop(DropLine, origin.Y - DropLine.Height / 2);
+        DropLine.Width = Math.Max(0, row.ActualWidth - 16);
+        DropLine.Visibility = Visibility.Visible;
     }
 
     private void AppsBox_Drop(object sender, DragEventArgs e)
     {
+        DropLine.Visibility = Visibility.Collapsed;
         var at = DropIndex(e);
         if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
         {
@@ -612,6 +705,71 @@ public partial class MainWindow : Window
             RefreshIndexes();
             AppsBox.SelectedIndex = to;
         }
+    }
+
+    // Dragging apps onto another list in the sidebar: move, or copy with Ctrl held.
+
+    /// <summary>The list row under the pointer that a dragged app may go to: any list but the one it comes from.</summary>
+    private ListRow? DropTarget(DragEventArgs e) =>
+        e.Data.GetDataPresent(AppDragFormat)
+        && e.OriginalSource is DependencyObject source
+        && ItemsControl.ContainerFromElement(ListsBox, source) is ListBoxItem { DataContext: ListRow row }
+        && !string.Equals(row.Name, currentList, StringComparison.OrdinalIgnoreCase)
+            ? row
+            : null;
+
+    private static bool IsCopy(DragEventArgs e) => e.KeyStates.HasFlag(DragDropKeyStates.ControlKey);
+
+    private void HighlightDropTarget(ListRow? target)
+    {
+        foreach (var row in ListsBox.Items.OfType<ListRow>())
+            row.IsDropTarget = row == target;
+    }
+
+    private void ListsBox_DragOver(object sender, DragEventArgs e)
+    {
+        var target = DropTarget(e);
+        HighlightDropTarget(target);
+        e.Effects = target is null ? DragDropEffects.None : IsCopy(e) ? DragDropEffects.Copy : DragDropEffects.Move;
+        e.Handled = true;
+    }
+
+    private void ListsBox_DragLeave(object sender, DragEventArgs e) => HighlightDropTarget(null);
+
+    /// <summary>
+    /// Appends a copy of the dragged item to the target list and, for a move, removes it from this one, in one
+    /// update; refused like any save when this list changed elsewhere since it was loaded.
+    /// </summary>
+    private void ListsBox_Drop(object sender, DragEventArgs e)
+    {
+        var target = DropTarget(e);
+        HighlightDropTarget(null);
+        if (target is null || e.Data.GetData(AppDragFormat) is not AppItem dragged)
+            return;
+        var index = items.IndexOf(dragged);
+        if (index < 0)
+            return;
+        var copy = IsCopy(e);
+        var from = currentList;
+        var baseline = listBaseline;
+        var json = System.Text.Json.JsonSerializer.Serialize(dragged.Entry, ConfigStore.JsonOptions);
+        if (!TryUpdate(c =>
+            {
+                if (!c.Lists.TryGetValue(from, out var source) || Fingerprint(source) != baseline || !c.Lists.TryGetValue(target.Name, out var destination))
+                    throw new ListChangedElsewhere();
+                destination.Add(System.Text.Json.JsonSerializer.Deserialize<Entry>(json, ConfigStore.JsonOptions)!);
+                if (!copy)
+                    source.RemoveAt(index);
+            }))
+            return;
+        if (!copy)
+        {
+            items.RemoveAt(index);
+            listBaseline = Fingerprint(items.Select(i => i.Entry).ToList());
+            RefreshIndexes();
+            UpdatePages();
+        }
+        StatusText.Text = $"{(copy ? "Copied" : "Moved")} \u201c{dragged.Name}\u201d to \u201c{target.Name}\u201d.";
     }
 
     private int DropIndex(DragEventArgs e)
@@ -631,13 +789,17 @@ public partial class MainWindow : Window
 
     // Details
 
-    private void AppsBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => ShowDetails();
+    private void AppsBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        StatusText.Text = "";
+        ShowDetails();
+    }
 
     private void ShowDetails()
     {
         filling = true;
         var item = Selected;
-        Details.IsEnabled = item is not null;
+        Details.IsEnabled = item is { IsBreak: false };
         RemoveButton.IsEnabled = item is not null;
         var entry = item?.Entry ?? new Entry();
         TitleBox.Text = entry.Title ?? "";
@@ -647,15 +809,33 @@ public partial class MainWindow : Window
         TrackPathBox.Text = entry.TrackPath ?? "";
         IconBox.Text = entry.Icon ?? "";
         Select(KindBox, entry.Kind?.ToString().ToLowerInvariant());
-        Select(PresetBox, entry.Preset);
         Select(OnRunningBox, entry.OnRunning?.ToString().ToLowerInvariant());
         Select(LongPressBox, entry.LongPress?.ToString().ToLowerInvariant());
         Select(KillModeBox, entry.KillMode?.ToString().ToLowerInvariant());
         Select(AdminBox, entry.Admin?.ToString().ToLowerInvariant());
         Select(IndicatorBox, entry.Indicator?.ToString().ToLowerInvariant());
         PreviewImage.Source = item?.Icon;
+        shownState = null;
         ResolvedText.Text = item is null ? "" : Describe(TargetResolver.Resolve(entry));
         filling = false;
+    }
+
+    /// <summary>The "default" choice of each behaviour picker names the built-in value the app gets when it sets none.</summary>
+    private void ShowInherited()
+    {
+        var d = LaunchOptions.Defaults;
+        SetInherited(OnRunningBox, d.OnRunning.ToString());
+        SetInherited(LongPressBox, d.LongPress.ToString());
+        SetInherited(KillModeBox, d.KillMode.ToString());
+        SetInherited(AdminBox, d.Admin ? "true" : "false");
+        SetInherited(IndicatorBox, d.Indicator.ToString());
+    }
+
+    private static void SetInherited(ComboBox box, string value)
+    {
+        var choices = box.Items.OfType<ComboBoxItem>().ToList();
+        var text = choices.Skip(1).FirstOrDefault(i => string.Equals(i.Tag as string, value, StringComparison.OrdinalIgnoreCase))?.Content as string ?? value;
+        choices[0].Content = $"default: {text}";
     }
 
     private static string Describe(ResolvedTarget t)
@@ -674,6 +854,18 @@ public partial class MainWindow : Window
             return;
         var value = string.IsNullOrWhiteSpace(box.Text) ? null : box.Text.Trim();
         var entry = item.Entry;
+        var old = box.Tag switch
+        {
+            "title" => entry.Title,
+            "target" => entry.Target,
+            "args" => entry.Args,
+            "workDir" => entry.WorkDir,
+            "trackPath" => entry.TrackPath,
+            "icon" => entry.Icon,
+            _ => value,
+        };
+        if (value == old)
+            return;
         switch (box.Tag)
         {
             case "title": entry.Title = value; break;
@@ -696,7 +888,6 @@ public partial class MainWindow : Window
         var value = (box.SelectedItem as ComboBoxItem)?.Tag as string;
         var entry = item.Entry;
         if (box == KindBox) entry.Kind = Parse<TargetKind>(value);
-        else if (box == PresetBox) entry.Preset = value ?? AppConfig.DefaultPresetName;
         else if (box == OnRunningBox) entry.OnRunning = Parse<OnRunning>(value);
         else if (box == LongPressBox) entry.LongPress = Parse<LongPressMode>(value);
         else if (box == KillModeBox) entry.KillMode = Parse<KillMode>(value);
@@ -710,12 +901,137 @@ public partial class MainWindow : Window
         if (Selected is not { } item)
             return;
         var dialog = new OpenFileDialog { Filter = "Programs and shortcuts|*.exe;*.lnk|All files|*.*", DereferenceLinks = false };
+        if (CurrentTargetFile(item.Entry) is { } current)
+        {
+            dialog.InitialDirectory = Path.GetDirectoryName(current);
+            dialog.FileName = Path.GetFileName(current);
+        }
         if (dialog.ShowDialog(this) != true)
             return;
         item.Entry.Target = dialog.FileName;
         item.Entry.Kind = null;
         Commit(item);
         ShowDetails();
+    }
+
+    // Test key: the preview icon behaves like the app's key on the deck, through the same AppRuntime rules.
+
+    private readonly AppRuntime tester = new(new PressExecutor(new Win32AppOperations()));
+    private readonly Win32ProcessSource processes = new();
+    private DispatcherTimer? testPoll;
+    private DispatcherTimer? holdTimer;
+    private RunState? shownState;
+    private (AppItem Item, DateTime At)? pendingLaunch;
+
+    /// <summary>Polls the selected app's state at the plugin's rate so the preview's dot and the startup timing stay live.</summary>
+    private void StartTestPoll()
+    {
+        testPoll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(Math.Max(250, config.PollMs)) };
+        testPoll.Tick += (_, _) => PollTestState();
+        testPoll.Start();
+    }
+
+    private void PollTestState()
+    {
+        if (Selected is not { IsBreak: false } item)
+            return;
+        var state = tester.StateOf(item.Entry, new ProcessSnapshot(processes.Snapshot()));
+        if (pendingLaunch is { } launch && launch.Item == item && state is not RunState.Starting)
+        {
+            var seconds = (DateTime.UtcNow - launch.At).TotalSeconds;
+            StatusText.Text = state is RunState.Stopped
+                ? $"{item.Name} stopped without showing a window."
+                : $"{item.Name} showed its window after {seconds:0.0} s.";
+            pendingLaunch = null;
+        }
+        if (state == shownState)
+            return;
+        shownState = state;
+        if (state == RunState.Stopped)
+        {
+            PreviewImage.Source = item.Icon;
+            return;
+        }
+        var entry = item.Entry;
+        var snapshot = config;
+        App.Shell.RunAsync(() => KeyImages.Render(entry, snapshot, state)).ContinueWith(t =>
+        {
+            if (t.Status == TaskStatus.RanToCompletion && Selected == item && shownState == state)
+                PreviewImage.Source = t.Result;
+        }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
+
+    private void TestKey_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (Selected is not { IsBreak: false } item)
+            return;
+        TestKey.CaptureMouse();
+        TestKey.Opacity = 0.6;
+        holdTimer?.Stop();
+        holdTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(config.LongPressMs) };
+        holdTimer.Tick += async (_, _) =>
+        {
+            holdTimer.Stop();
+            TestKey.Opacity = 1;
+            await TestPressAsync(item, isLong: true);
+        };
+        holdTimer.Start();
+    }
+
+    private async void TestKey_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        TestKey.ReleaseMouseCapture();
+        TestKey.Opacity = 1;
+        if (holdTimer is not { IsEnabled: true } timer || Selected is not { IsBreak: false } item)
+            return;
+        timer.Stop();
+        await TestPressAsync(item, isLong: false);
+    }
+
+    private async Task TestPressAsync(AppItem item, bool isLong)
+    {
+        var press = isLong ? "Long press" : "Short press";
+        var outcome = await tester.PressAsync(item.Entry, isLong, new ProcessSnapshot(processes.Snapshot()), config);
+        StatusText.Text = outcome.Result.Success
+            ? $"{press} \u2192 {Describe(outcome.Decision)}."
+            : $"{press} \u2192 {Describe(outcome.Decision)} failed: {outcome.Result.Error}";
+        pendingLaunch = outcome.Launched ? (item, DateTime.UtcNow) : null;
+        PollTestState();
+    }
+
+    private static string Describe(PressDecision decision) => decision switch
+    {
+        PressDecision.Launch => "launched",
+        PressDecision.LaunchAdmin => "launched as administrator",
+        PressDecision.Relaunch => "launched another instance",
+        PressDecision.FocusOrRelaunch => "brought to front, or launched again when it had no window",
+        PressDecision.Focus => "brought to front",
+        PressDecision.FocusIfAny => "still starting, brought to front if it has a window",
+        PressDecision.Close => "closed",
+        PressDecision.Nothing => "nothing (set to do nothing while running)",
+        _ => "refused",
+    };
+
+    private void PickIcon_Click(object sender, RoutedEventArgs e)
+    {
+        if (Selected is not { } item)
+            return;
+        var resolved = TargetResolver.Resolve(item.Entry);
+        var current = item.Entry.Icon is { } icon ? TargetResolver.Expand(icon) : null;
+        var picker = new IconPickerWindow(current, resolved.ShortcutExe ?? resolved.LaunchFile) { Owner = this };
+        if (picker.ShowDialog() != true || picker.Chosen == item.Entry.Icon)
+            return;
+        item.Entry.Icon = picker.Chosen;
+        Commit(item);
+        ShowDetails();
+    }
+
+    /// <summary>The file the target points at (the shortcut itself for a .lnk, the newest match for a versioned path), if it exists.</summary>
+    private static string? CurrentTargetFile(Entry entry)
+    {
+        var resolved = TargetResolver.Resolve(entry);
+        var file = resolved.Kind == TargetKind.Lnk ? TargetResolver.Expand(entry.Target) : resolved.LaunchFile;
+        return file is not null && File.Exists(file) ? file : null;
     }
 
     private void Commit(AppItem item)

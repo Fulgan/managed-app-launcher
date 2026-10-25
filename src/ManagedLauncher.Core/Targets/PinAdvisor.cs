@@ -64,7 +64,7 @@ public static partial class PinAdvisor
     /// The entry keeps the path as given; a shortcut stays a shortcut because installers rewrite their shortcuts on
     /// update. Only the running-indicator path is adjusted for Squirrel launchers. Everything else is advice.
     /// </summary>
-    public static PinPlan Plan(string path, string? title, string? preset)
+    public static PinPlan Plan(string path, string? title)
     {
         var target = TargetResolver.Expand(path);
         var kind = TargetKindDetector.Detect(target);
@@ -76,7 +76,6 @@ public static partial class PinAdvisor
             Target = target,
             Kind = kind,
             Title = title,
-            Preset = preset ?? AppConfig.DefaultPresetName,
         };
         var advice = new List<string>();
 

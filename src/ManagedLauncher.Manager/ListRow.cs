@@ -9,6 +9,7 @@ public sealed class ListRow(string name) : INotifyPropertyChanged
     private bool isEditing;
     private string draft = name;
     private string? error;
+    private bool isDropTarget;
 
     public string Name { get; } = name;
 
@@ -32,6 +33,13 @@ public sealed class ListRow(string name) : INotifyPropertyChanged
     }
 
     public bool HasError => Error is not null;
+
+    /// <summary>An app is being dragged over this list and would land in it.</summary>
+    public bool IsDropTarget
+    {
+        get => isDropTarget;
+        set { isDropTarget = value; Changed(); }
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 

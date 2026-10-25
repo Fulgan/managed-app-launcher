@@ -20,11 +20,31 @@ public sealed class AppItem(Entry entry) : INotifyPropertyChanged
         set { icon = value; Changed(); }
     }
 
-    public string Name => Entry.Title ?? DefaultName(Entry);
+    public bool IsBreak => Entry.IsBreak;
 
-    public string Target => Entry.Target;
+    /// <summary>Segoe Fluent glyph shown in place of an icon for a break.</summary>
+    public string? BreakGlyph => Entry.Break switch
+    {
+        ListBreak.Row => "\uE751",
+        ListBreak.Page => "\uE7C3",
+        _ => null,
+    };
 
-    public string? Problem => TargetResolver.Resolve(Entry).Error;
+    public string Name => Entry.Break switch
+    {
+        ListBreak.Row => "Row break",
+        ListBreak.Page => "Page break",
+        _ => Entry.Title ?? DefaultName(Entry),
+    };
+
+    public string Target => Entry.Break switch
+    {
+        ListBreak.Row => "the next app starts on a new row",
+        ListBreak.Page => "the next app starts on a new page",
+        _ => Entry.Target,
+    };
+
+    public string? Problem => IsBreak ? null : TargetResolver.Resolve(Entry).Error;
 
     public bool HasProblem => Problem is not null;
 

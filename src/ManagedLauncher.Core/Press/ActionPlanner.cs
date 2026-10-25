@@ -35,13 +35,9 @@ public static class ActionPlanner
 
     private static PressDecision PlanSettled(bool isLong, bool running, LaunchOptions options, ResolvedTarget target)
     {
-        var packaged = target.Kind == TargetKind.Aumid;
-        if (isLong && options.LongPress == LongPressMode.Auto)
-        {
-            if (running)
-                return PressDecision.Close;
-            return packaged ? PressDecision.Alert : PressDecision.LaunchAdmin;
-        }
+        var packaged = target.Kind is TargetKind.Aumid or TargetKind.Url;
+        if (isLong && running && options.LongPress == LongPressMode.Auto)
+            return PressDecision.Close;
 
         if (!running)
             return LaunchDecision(options, packaged);
@@ -55,7 +51,7 @@ public static class ActionPlanner
         };
     }
 
-    /// <summary>Packaged apps can't be started elevated through the shell, so an admin preset on one is an error.</summary>
+    /// <summary>Packaged apps and links can't be started elevated through the shell, so the admin option on one is an error.</summary>
     private static PressDecision LaunchDecision(LaunchOptions options, bool packaged) =>
         !options.Admin ? PressDecision.Launch
         : packaged ? PressDecision.Alert

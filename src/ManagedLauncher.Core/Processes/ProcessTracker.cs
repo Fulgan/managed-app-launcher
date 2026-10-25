@@ -1,10 +1,8 @@
-using ManagedLauncher.Core.Targets;
-
 namespace ManagedLauncher.Core.Processes;
 
 /// <summary>
-/// Polls the process list once per interval and reports, per subscribed key, when its target
-/// starts or stops running. Targets are re-resolved on every tick.
+/// Polls the process list once per interval and reports, per subscribed key, when its <see cref="RunState"/>
+/// changes. Each key's state is recomputed from the snapshot on every tick.
 /// </summary>
 public sealed class ProcessTracker : IAsyncDisposable
 {
@@ -12,6 +10,7 @@ public sealed class ProcessTracker : IAsyncDisposable
     private readonly TimeProvider time;
     private readonly Dictionary<string, Subscription> subscriptions = [];
     private readonly Lock gate = new();
+    private readonly Lock refreshGate = new();
     private readonly CancellationTokenSource stop = new();
     private Task? loop;
 
@@ -21,8 +20,8 @@ public sealed class ProcessTracker : IAsyncDisposable
         this.time = time ?? TimeProvider.System;
     }
 
-    /// <summary>Raised with (key, isRunning) after a tick in which the key's state changed.</summary>
-    public event Action<string, bool>? RunningChanged;
+    /// <summary>Raised with (key, state) after a tick in which the key's state changed.</summary>
+    public event Action<string, RunState>? StateChanged;
 
     public event Action<Exception>? Error;
 
@@ -36,10 +35,10 @@ public sealed class ProcessTracker : IAsyncDisposable
     }
 
     /// <summary>Adds or replaces a key. Its first state is reported on the next tick.</summary>
-    public void Subscribe(string key, Func<ResolvedTarget?> resolve)
+    public void Subscribe(string key, Func<ProcessSnapshot, RunState> state)
     {
         lock (gate)
-            subscriptions[key] = new Subscription(resolve);
+            subscriptions[key] = new Subscription(state);
     }
 
     public void Unsubscribe(string key)
@@ -48,41 +47,47 @@ public sealed class ProcessTracker : IAsyncDisposable
             subscriptions.Remove(key);
     }
 
-    /// <summary>Takes a fresh snapshot now; used after launching or killing so the indicator catches up quickly.</summary>
+    /// <summary>
+    /// Takes a fresh snapshot now; used after launching or killing so the indicator catches up quickly. Calls are
+    /// serialized so an older snapshot is never applied over a newer one.
+    /// </summary>
     public ProcessSnapshot Refresh()
     {
-        var snapshot = new ProcessSnapshot(source.Snapshot());
-        Apply(snapshot);
-        return snapshot;
+        lock (refreshGate)
+        {
+            var snapshot = new ProcessSnapshot(source.Snapshot());
+            Apply(snapshot);
+            return snapshot;
+        }
     }
 
     internal void Apply(ProcessSnapshot snapshot)
     {
         Current = snapshot;
-        List<(string Key, bool Running)> changes = [];
+        List<(string Key, RunState State)> changes = [];
         lock (gate)
         {
             foreach (var (key, sub) in subscriptions)
             {
-                bool running;
+                RunState state;
                 try
                 {
-                    running = snapshot.IsRunning(sub.Resolve());
+                    state = sub.State(snapshot);
                 }
                 catch (Exception ex)
                 {
                     Error?.Invoke(ex);
                     continue;
                 }
-                if (sub.Running != running)
+                if (sub.Last != state)
                 {
-                    sub.Running = running;
-                    changes.Add((key, running));
+                    sub.Last = state;
+                    changes.Add((key, state));
                 }
             }
         }
-        foreach (var (key, running) in changes)
-            RunningChanged?.Invoke(key, running);
+        foreach (var (key, state) in changes)
+            StateChanged?.Invoke(key, state);
     }
 
     private async Task RunAsync(CancellationToken token)
@@ -116,9 +121,9 @@ public sealed class ProcessTracker : IAsyncDisposable
         stop.Dispose();
     }
 
-    private sealed class Subscription(Func<ResolvedTarget?> resolve)
+    private sealed class Subscription(Func<ProcessSnapshot, RunState> state)
     {
-        public Func<ResolvedTarget?> Resolve { get; } = resolve;
-        public bool? Running { get; set; }
+        public Func<ProcessSnapshot, RunState> State { get; } = state;
+        public RunState? Last { get; set; }
     }
 }

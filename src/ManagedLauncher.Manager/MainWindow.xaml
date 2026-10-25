@@ -25,7 +25,7 @@
         <DockPanel>
           <TextBlock DockPanel.Dock="Top" Text="Lists" Style="{StaticResource LargeTitle}" FontSize="22" Margin="6,0,0,10" />
           <StackPanel x:Name="DecksSection" DockPanel.Dock="Bottom" Margin="0,4,0,0"
-                      ToolTip="A deck with a list always shows the Managed App Launcher profile with that list">
+                      ToolTip="A deck set to a list always shows that list">
             <TextBlock Text="DECKS" Style="{StaticResource SectionHeader}" Margin="6,14,6,4" />
             <StackPanel x:Name="DecksPanel" />
           </StackPanel>
@@ -38,7 +38,9 @@
                     ToolTip="Remove list" AutomationProperties.Name="Remove list" Margin="6,0,0,0" />
           </StackPanel>
           <ListBox x:Name="ListsBox" SelectionChanged="ListsBox_SelectionChanged" ItemContainerStyle="{StaticResource SidebarItem}"
-                   MouseDoubleClick="ListsBox_MouseDoubleClick" KeyDown="ListsBox_KeyDown">
+                   MouseDoubleClick="ListsBox_MouseDoubleClick" KeyDown="ListsBox_KeyDown"
+                   AllowDrop="True" DragOver="ListsBox_DragOver" DragLeave="ListsBox_DragLeave" Drop="ListsBox_Drop"
+                   ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <ListBox.ItemTemplate>
               <DataTemplate DataType="{x:Type local:ListRow}">
                 <Grid MinHeight="22">
@@ -47,8 +49,10 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                   </Grid.ColumnDefinitions>
+                  <Border x:Name="drop" Grid.ColumnSpan="3" Margin="-10,-7" CornerRadius="10" BorderThickness="2"
+                          BorderBrush="{StaticResource Accent}" Visibility="Collapsed" />
                   <TextBlock Text="&#xE8FD;" FontFamily="{StaticResource Glyphs}" FontSize="14" Margin="0,1,10,0" VerticalAlignment="Center" />
-                  <TextBlock x:Name="name" Grid.Column="1" Text="{Binding Name}" FontSize="14" VerticalAlignment="Center"
+                  <TextBlock x:Name="name" Grid.Column="1" Text="{Binding Name}" ToolTip="{Binding Name}" FontSize="14" VerticalAlignment="Center"
                              TextTrimming="CharacterEllipsis" />
                   <Border x:Name="editor" Grid.Column="1" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#40000000"
                           CornerRadius="6" BorderThickness="1.5" BorderBrush="#80FFFFFF" Margin="-4,-3" Padding="4,2"
@@ -83,6 +87,9 @@
                   <DataTrigger Binding="{Binding HasError}" Value="True">
                     <Setter TargetName="editor" Property="BorderBrush" Value="{StaticResource Error}" />
                   </DataTrigger>
+                  <DataTrigger Binding="{Binding IsDropTarget}" Value="True">
+                    <Setter TargetName="drop" Property="Visibility" Value="Visible" />
+                  </DataTrigger>
                 </DataTemplate.Triggers>
               </DataTemplate>
             </ListBox.ItemTemplate>
@@ -102,7 +109,7 @@
             <TextBlock x:Name="PagesText" Style="{StaticResource Footnote}" Margin="0,2,0,0" />
             <CheckBox x:Name="ReturnAfterLaunchBox" Style="{StaticResource Switch}" Content="Return after launch" Margin="0,8,0,0"
                       HorizontalAlignment="Left" Checked="ReturnAfterLaunch_Changed" Unchecked="ReturnAfterLaunch_Changed"
-                      ToolTip="After a key of this list launches or focuses an app, the deck leaves the launcher: back to the profile it was opened from, or to the first page" />
+                      ToolTip="After a launch, the deck returns to the previous profile, or to the first page" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
             <Button Style="{StaticResource Icon}" AutomationProperties.Name="Move up" Content="&#xE74A;" Click="Up_Click" ToolTip="Move up" Margin="0,0,6,0" />
@@ -111,69 +118,110 @@
           </StackPanel>
         </Grid>
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,12,0,0">
-          <Button Style="{StaticResource Filled}" Click="AddStartMenu_Click" AutomationProperties.Name="Add from Start menu">
+          <Button Style="{StaticResource Filled}" Click="OpenMenu_Click" AutomationProperties.Name="Add app">
+            <Button.ContextMenu>
+              <ContextMenu Placement="Top">
+                <MenuItem Header="From Start menu…" Click="AddStartMenu_Click" />
+                <MenuItem Header="Running app…" Click="AddRunning_Click" />
+                <MenuItem Header="File…" Click="AddFile_Click" />
+                <MenuItem x:Name="SteamMenuItem" Header="Steam game…" Click="AddSteam_Click" />
+              </ContextMenu>
+            </Button.ContextMenu>
             <StackPanel Orientation="Horizontal">
               <TextBlock Text="&#xE710;" FontFamily="{StaticResource Glyphs}" FontSize="11" Margin="0,1,8,0" Foreground="White" VerticalAlignment="Center" />
-              <TextBlock Text="Add from Start menu" Foreground="White" />
+              <TextBlock Text="Add app" Foreground="White" />
             </StackPanel>
           </Button>
-          <Button Content="Running app…" Click="AddRunning_Click" />
-          <Button Content="Add file…" Click="AddFile_Click" />
+          <Button Click="OpenMenu_Click" AutomationProperties.Name="Add separator">
+            <Button.ContextMenu>
+              <ContextMenu Placement="Top">
+                <MenuItem Header="Row break" InputGestureText="next app on a new row" Click="AddRowBreak_Click" />
+                <MenuItem Header="Page break" InputGestureText="next app on a new page" Click="AddPageBreak_Click" />
+              </ContextMenu>
+            </Button.ContextMenu>
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="&#xE710;" FontFamily="{StaticResource Glyphs}" FontSize="11" Margin="0,1,8,0" VerticalAlignment="Center" />
+              <TextBlock Text="Add separator" />
+            </StackPanel>
+          </Button>
         </StackPanel>
         <Border Style="{StaticResource Card}" Padding="0,6">
-          <ListBox x:Name="AppsBox" AllowDrop="True" SelectionMode="Single" ItemContainerStyle="{StaticResource CardItem}"
-                   SelectionChanged="AppsBox_SelectionChanged" KeyDown="AppsBox_KeyDown"
-                   PreviewMouseLeftButtonDown="AppsBox_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="AppsBox_PreviewMouseLeftButtonUp"
-                   PreviewMouseMove="AppsBox_PreviewMouseMove"
-                   DragOver="AppsBox_DragOver" Drop="AppsBox_Drop"
-                   ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-            <ListBox.ItemTemplate>
-              <DataTemplate>
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="26" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                  </Grid.ColumnDefinitions>
-                  <TextBlock Grid.Column="0" Foreground="{StaticResource Faint}" FontSize="12" VerticalAlignment="Center"
-                             Text="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Converter={x:Static local:IndexConverter.Instance}}" />
-                  <Image Grid.Column="1" Source="{Binding Icon}" Width="44" Height="44">
-                    <Image.Clip>
-                      <RectangleGeometry Rect="0,0,44,44" RadiusX="10" RadiusY="10" />
-                    </Image.Clip>
-                  </Image>
-                  <StackPanel Grid.Column="2" Margin="14,0,0,0" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                    <TextBlock Text="{Binding Target}" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" FontSize="12" Margin="0,1,0,0" />
-                    <TextBlock Text="{Binding Problem}" Foreground="{StaticResource Error}" FontSize="12" Margin="0,1,0,0">
-                      <TextBlock.Style>
-                        <Style TargetType="TextBlock">
+          <Grid>
+            <ListBox x:Name="AppsBox" AllowDrop="True" SelectionMode="Single" ItemContainerStyle="{StaticResource CardItem}"
+                     SelectionChanged="AppsBox_SelectionChanged" KeyDown="AppsBox_KeyDown"
+                     PreviewMouseLeftButtonDown="AppsBox_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="AppsBox_PreviewMouseLeftButtonUp"
+                     PreviewMouseMove="AppsBox_PreviewMouseMove"
+                     DragOver="AppsBox_DragOver" DragLeave="AppsBox_DragLeave" Drop="AppsBox_Drop"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="26" />
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Foreground="{StaticResource Faint}" FontSize="12" VerticalAlignment="Center"
+                               Text="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Converter={x:Static local:IndexConverter.Instance}}" />
+                    <Image Grid.Column="1" Source="{Binding Icon}" Width="44" Height="44">
+                      <Image.Clip>
+                        <RectangleGeometry Rect="0,0,44,44" RadiusX="10" RadiusY="10" />
+                      </Image.Clip>
+                    </Image>
+                    <Border Grid.Column="1" Width="44" Height="44" CornerRadius="10" BorderThickness="1.5" BorderBrush="{StaticResource Faint}">
+                      <Border.Style>
+                        <Style TargetType="Border">
+                          <Setter Property="Visibility" Value="Collapsed" />
                           <Style.Triggers>
-                            <DataTrigger Binding="{Binding HasProblem}" Value="False">
-                              <Setter Property="Visibility" Value="Collapsed" />
+                            <DataTrigger Binding="{Binding IsBreak}" Value="True">
+                              <Setter Property="Visibility" Value="Visible" />
                             </DataTrigger>
                           </Style.Triggers>
                         </Style>
-                      </TextBlock.Style>
-                    </TextBlock>
-                  </StackPanel>
-                </Grid>
-              </DataTemplate>
-            </ListBox.ItemTemplate>
-          </ListBox>
+                      </Border.Style>
+                      <TextBlock Text="{Binding BreakGlyph}" FontFamily="{StaticResource Glyphs}" FontSize="18" Foreground="{StaticResource Muted}"
+                                 HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <StackPanel Grid.Column="2" Margin="14,0,0,0" VerticalAlignment="Center">
+                      <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding Target}" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" FontSize="12" Margin="0,1,0,0" />
+                      <TextBlock Text="{Binding Problem}" Foreground="{StaticResource Error}" FontSize="12" Margin="0,1,0,0">
+                        <TextBlock.Style>
+                          <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding HasProblem}" Value="False">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </TextBlock.Style>
+                      </TextBlock>
+                    </StackPanel>
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <Canvas IsHitTestVisible="False">
+              <Border x:Name="DropLine" Height="3" CornerRadius="1.5" Background="{StaticResource Accent}" Visibility="Collapsed" />
+            </Canvas>
+          </Grid>
         </Border>
       </DockPanel>
 
       <!-- Details -->
       <ScrollViewer Grid.Column="4" VerticalScrollBarVisibility="Auto">
         <StackPanel x:Name="Details" IsEnabled="False" Margin="0,0,4,0">
-          <Image x:Name="PreviewImage" Width="96" Height="96" HorizontalAlignment="Center" Margin="0,4,0,0">
-            <Image.Clip>
-              <RectangleGeometry Rect="0,0,96,96" RadiusX="22" RadiusY="22" />
-            </Image.Clip>
-          </Image>
+          <Border x:Name="TestKey" HorizontalAlignment="Center" Margin="0,4,0,0" Background="Transparent" Cursor="Hand"
+                  MouseLeftButtonDown="TestKey_MouseLeftButtonDown" MouseLeftButtonUp="TestKey_MouseLeftButtonUp">
+            <Image x:Name="PreviewImage" Width="96" Height="96">
+              <Image.Clip>
+                <RectangleGeometry Rect="0,0,96,96" RadiusX="22" RadiusY="22" />
+              </Image.Clip>
+            </Image>
+          </Border>
           <TextBlock Text="{Binding SelectedItem.Name, ElementName=AppsBox}" FontSize="20" FontWeight="SemiBold"
                      FontFamily="{StaticResource TitleFont}" HorizontalAlignment="Center" Margin="0,10,0,0" TextTrimming="CharacterEllipsis" />
+          <TextBlock Text="click or hold the icon to test" Style="{StaticResource Footnote}" HorizontalAlignment="Center" Margin="0,2,0,0" />
 
           <TextBlock Text="KEY" Style="{StaticResource SectionHeader}" />
           <Border Style="{StaticResource Card}">
@@ -182,7 +230,7 @@
                 <DockPanel>
                   <TextBlock Text="Title" Style="{StaticResource RowLabel}" Width="100" />
                   <TextBox x:Name="TitleBox" Tag="title" Style="{StaticResource Inline}" local:Hint.Text="Stream Deck title"
-                           LostFocus="Field_Changed" ToolTip="Empty: the key shows the title set in Stream Deck" />
+                           LostFocus="Field_Changed" />
                 </DockPanel>
               </Border>
               <Border Style="{StaticResource Row}">
@@ -207,12 +255,6 @@
           <TextBlock Text="BEHAVIOR" Style="{StaticResource SectionHeader}" />
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <Border Style="{StaticResource Row}">
-                <DockPanel>
-                  <TextBlock Text="Preset" Style="{StaticResource RowLabel}" Width="100" />
-                  <ComboBox x:Name="PresetBox" SelectionChanged="Combo_Changed" />
-                </DockPanel>
-              </Border>
               <Border Style="{StaticResource Row}">
                 <DockPanel>
                   <TextBlock Text="If running" Style="{StaticResource RowLabel}" Width="100" />
@@ -265,14 +307,16 @@
                 <DockPanel>
                   <TextBlock Text="Track exe" Style="{StaticResource RowLabel}" Width="100" />
                   <TextBox x:Name="TrackPathBox" Tag="trackPath" Style="{StaticResource Inline}" local:Hint.Text="same as target"
-                           LostFocus="Field_Changed" ToolTip="Exe to watch for the running dot when it differs from the one launched" />
+                           LostFocus="Field_Changed" ToolTip="Exe or folder\ whose processes count as the app" />
                 </DockPanel>
               </Border>
               <Border Style="{StaticResource LastRow}">
                 <DockPanel>
-                  <TextBlock Text="Icon file" Style="{StaticResource RowLabel}" Width="100" />
+                  <TextBlock Text="Icon" Style="{StaticResource RowLabel}" Width="100" />
+                  <Button DockPanel.Dock="Right" Style="{StaticResource Icon}" Content="&#xE8B9;" Click="PickIcon_Click"
+                          Width="28" Height="28" Margin="8,0,0,0" ToolTip="Choose icon" AutomationProperties.Name="Choose icon" />
                   <TextBox x:Name="IconBox" Tag="icon" Style="{StaticResource Inline}" local:Hint.Text="app icon"
-                           LostFocus="Field_Changed" ToolTip="Image to show instead of the app's icon" />
+                           LostFocus="Field_Changed" />
                 </DockPanel>
               </Border>
             </StackPanel>
@@ -280,8 +324,7 @@
         </StackPanel>
       </ScrollViewer>
 
-      <TextBlock Grid.Row="1" Grid.ColumnSpan="5" x:Name="StatusText" Style="{StaticResource Footnote}" Margin="6,12,0,0"
-                 Text="Drop shortcuts or programs onto the list. Changes are saved immediately and appear on the deck." />
+      <TextBlock Grid.Row="1" Grid.ColumnSpan="5" x:Name="StatusText" Style="{StaticResource Footnote}" Margin="6,12,0,0" />
     </Grid>
 
     <!-- In-window alert: dims the window and takes all input until answered. -->

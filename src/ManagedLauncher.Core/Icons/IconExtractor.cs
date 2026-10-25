@@ -81,6 +81,49 @@ public static class IconExtractor
         }
     }
 
+    /// <summary>
+    /// A custom icon: <c>file,index</c> names the index-th icon of an exe, dll or .ico (a negative index is a resource
+    /// id); a .ico without index means its first icon; any other file is an image (png, jpg, bmp…).
+    /// </summary>
+    public static Bitmap? LoadCustomIcon(string icon)
+    {
+        var (file, index) = ParseIconRef(icon);
+        if (index is null && !Path.GetExtension(file).Equals(".ico", StringComparison.OrdinalIgnoreCase))
+            return LoadImageFile(file);
+        return ExtractIndexed(file, index ?? 0);
+    }
+
+    public static (string File, int? Index) ParseIconRef(string icon)
+    {
+        var comma = icon.LastIndexOf(',');
+        return comma > 0 && int.TryParse(icon.AsSpan(comma + 1).Trim(), out var index)
+            ? (icon[..comma].Trim(), index)
+            : (icon.Trim(), null);
+    }
+
+    /// <summary>Number of icons in an exe, dll or .ico; 0 for anything else.</summary>
+    public static int CountIcons(string file) => File.Exists(file) ? (int)ExtractIconExW(file, -1, null, null, 0) : 0;
+
+    /// <summary>One icon of an exe, dll or .ico at the requested size (the closest the file holds, scaled), with alpha.</summary>
+    public static Bitmap? ExtractIndexed(string file, int index, int size = 256)
+    {
+        if (!File.Exists(file))
+            return null;
+        var handles = new IntPtr[1];
+        var ids = new int[1];
+        if (PrivateExtractIconsW(file, index, size, size, handles, ids, 1, 0) != 1 || handles[0] == IntPtr.Zero)
+            return null;
+        try
+        {
+            using var icon = Icon.FromHandle(handles[0]);
+            return icon.ToBitmap();
+        }
+        finally
+        {
+            DestroyIcon(handles[0]);
+        }
+    }
+
     public static Bitmap? LoadImageFile(string path)
     {
         try
@@ -203,4 +246,13 @@ public static class IconExtractor
 
     [DllImport("user32.dll")]
     private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint ExtractIconExW(string file, int index, IntPtr[]? large, IntPtr[]? small, uint count);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint PrivateExtractIconsW(string file, int index, int cx, int cy, IntPtr[] icons, int[] ids, uint count, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr icon);
 }

@@ -1,7 +1,7 @@
 // Shared property inspector plumbing. The Stream Deck application calls
 // connectElgatoStreamDeckSocket once the page loads; fields carry data-key and
 // are written back to the action's settings on change. Empty fields are
-// removed from settings so the entry inherits the value from its preset.
+// removed from settings so the entry uses the built-in default.
 
 let socket = null;
 let context = null;

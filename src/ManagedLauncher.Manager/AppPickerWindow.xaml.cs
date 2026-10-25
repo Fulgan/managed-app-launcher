@@ -38,7 +38,7 @@ public partial class AppPickerWindow : Window
         };
     }
 
-    public IReadOnlyList<string> Chosen { get; private set; } = [];
+    public IReadOnlyList<Choice> Chosen { get; private set; } = [];
 
     /// <summary>
     /// Start menu shortcuts and packaged (Store) apps. Shortcuts are offered as <c>.lnk</c> paths because installers
@@ -49,6 +49,12 @@ public partial class AppPickerWindow : Window
             .GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
             .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList());
+
+    /// <summary>Installed Steam games, started through Steam and tracked by their install folder.</summary>
+    public static AppPickerWindow SteamGames() =>
+        new("Add Steam game", "Steam games", SteamLibrary.Games()
+            .Select(g => new Choice(g.Name, g.ToEntry().Target, g.InstallDir) { Entry = g.ToEntry(), IconFile = g.Icon })
             .ToList());
 
     /// <summary>Apps showing a window right now, offered by exe path, or by AUMID when packaged.</summary>
@@ -116,7 +122,7 @@ public partial class AppPickerWindow : Window
         {
             if (closed)
                 return null;
-            using var bitmap = IconExtractor.Extract(source, 32);
+            using var bitmap = choice.IconFile is { } file ? IconExtractor.LoadImageFile(file) : IconExtractor.Extract(source, 32);
             if (bitmap is null)
                 return null;
             using var stream = new MemoryStream();
@@ -147,7 +153,7 @@ public partial class AppPickerWindow : Window
 
     private void Finish()
     {
-        Chosen = AppsBox.SelectedItems.OfType<Choice>().Select(c => c.Target).ToList();
+        Chosen = AppsBox.SelectedItems.OfType<Choice>().ToList();
         DialogResult = Chosen.Count > 0;
     }
 
@@ -158,6 +164,12 @@ public partial class AppPickerWindow : Window
         public string Name { get; } = name;
         public string Target { get; } = target;
         public string Detail { get; } = detail;
+
+        /// <summary>A ready entry to add as is; null means the target is planned like a dropped file.</summary>
+        public Core.Config.Entry? Entry { get; init; }
+
+        /// <summary>Image to show as the choice's icon instead of the target's shell icon.</summary>
+        public string? IconFile { get; init; }
 
         public ImageSource? Icon
         {

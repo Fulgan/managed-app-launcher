@@ -37,7 +37,7 @@ public class CliLogicTests
         var lnk = tmp.File("Tool.lnk");
         TargetTests.CreateShortcut(lnk, exe, "", tmp.Path);
 
-        var plan = PinAdvisor.Plan(lnk, null, null);
+        var plan = PinAdvisor.Plan(lnk, null);
 
         Assert.Equal(TargetKind.Lnk, plan.Entry.Kind);
         Assert.Equal(lnk, plan.Entry.Target);
@@ -53,7 +53,7 @@ public class CliLogicTests
         var lnk = tmp.File("Discord.lnk");
         TargetTests.CreateShortcut(lnk, update, "--processStart Discord.exe", tmp.Path);
 
-        var plan = PinAdvisor.Plan(lnk, null, null);
+        var plan = PinAdvisor.Plan(lnk, null);
 
         Assert.Equal(Path.Combine(tmp.Path, "Discord", "app-*", "Discord.exe"), plan.Entry.TrackPath);
     }

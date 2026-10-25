@@ -14,7 +14,6 @@ public class ConfigTests
         Assert.Equal(2000, config.LongPressMs);
         Assert.Equal(1500, config.PollMs);
         Assert.Equal(2000, config.CloseTimeoutMs);
-        Assert.True(config.Presets.ContainsKey("default"));
         Assert.Empty(config.GetList(null));
     }
 
@@ -24,9 +23,8 @@ public class ConfigTests
         using var tmp = new TempDir();
         var path = tmp.File("config.json");
         var config = new AppConfig();
-        config.Presets["tray"] = new Preset { OnRunning = OnRunning.Relaunch };
         config.Insert(null, new Entry { Target = @"C:\a.exe" });
-        config.Insert(null, new Entry { Target = @"C:\x.exe", Kind = TargetKind.Exe, Preset = "tray" });
+        config.Insert(null, new Entry { Target = @"C:\x.exe", Kind = TargetKind.Exe, OnRunning = OnRunning.Relaunch });
 
         ConfigStore.Save(path, config);
         var json = File.ReadAllText(path);
@@ -62,33 +60,47 @@ public class ConfigTests
     }
 
     [Fact]
-    public void EntryOverridesPresetWhichOverridesDefault()
+    public void UnsetSettingsUseBuiltInDefaults()
     {
-        var config = new AppConfig().Normalize();
-        config.Presets["default"] = new Preset { Args = "--d", KillMode = KillMode.Newest };
-        config.Presets["p"] = new Preset { Args = "--p", Admin = true };
-        var entry = new Entry { Preset = "p", Admin = false };
+        var options = LaunchOptions.Resolve(new Entry { Args = "--x", Admin = true });
 
-        var options = LaunchOptions.Resolve(config, entry);
-
-        Assert.Equal("--p", options.Args);
-        Assert.False(options.Admin);
-        Assert.Equal(KillMode.Newest, options.KillMode);
+        Assert.Equal("--x", options.Args);
+        Assert.True(options.Admin);
+        Assert.Equal(KillMode.All, options.KillMode);
         Assert.Equal(OnRunning.Auto, options.OnRunning);
         Assert.Equal(LongPressMode.Auto, options.LongPress);
+        Assert.Equal(IndicatorStyle.Dot, options.Indicator);
     }
 
     [Fact]
-    public void UnknownPresetFallsBackToDefaultAndLogs()
+    public void LegacyPresetsAreFoldedIntoEntriesAndNotWrittenBack()
     {
-        var config = new AppConfig().Normalize();
-        config.Presets["default"] = new Preset { OnRunning = OnRunning.Focus };
-        var logged = new List<string>();
+        using var tmp = new TempDir();
+        var path = tmp.File("config.json");
+        File.WriteAllText(path, """
+            {
+              "presets": {
+                "default": { "args": "--d", "killMode": "newest" },
+                "tray": { "args": "--t", "onRunning": "relaunch" }
+              },
+              "lists": { "default": [
+                { "target": "a.exe", "preset": "tray", "args": "--own" },
+                { "target": "b.exe", "preset": "tray" },
+                { "target": "c.exe" },
+                { "target": "d.exe", "preset": "gone" }
+              ] }
+            }
+            """);
 
-        var options = LaunchOptions.Resolve(config, new Entry { Preset = "nope" }, logged.Add);
+        var config = ConfigStore.Update(path, _ => { });
+        var apps = config.GetList(null);
+        var json = File.ReadAllText(path);
 
-        Assert.Equal(OnRunning.Focus, options.OnRunning);
-        Assert.Single(logged);
+        Assert.Equal(("--own", OnRunning.Relaunch, KillMode.Newest), (apps[0].Args, apps[0].OnRunning, apps[0].KillMode));
+        Assert.Equal(("--t", OnRunning.Relaunch), (apps[1].Args, apps[1].OnRunning));
+        Assert.Equal(("--d", KillMode.Newest, (OnRunning?)null), (apps[2].Args, apps[2].KillMode, apps[2].OnRunning));
+        Assert.Equal("--d", apps[3].Args);
+        Assert.DoesNotContain("preset", json);
     }
 
     [Fact]
@@ -294,5 +306,69 @@ public class ConfigTests
         config.Lists.Remove(copy);
         config.Normalize();
         Assert.False(config.ListOptions.ContainsKey(copy));
+    }
+
+    [Fact]
+    public async Task ConcurrentUpdatesAllLand()
+    {
+        using var tmp = new TempDir();
+        var path = tmp.File("config.json");
+        ConfigStore.Save(path, new AppConfig());
+
+        await Task.WhenAll(Enumerable.Range(0, 20).Select(i => Task.Run(
+            () => ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = $@"C:pp{i}.exe" })),
+            TestContext.Current.CancellationToken)));
+
+        Assert.Equal(20, ConfigStore.Load(path).GetList(null).Count);
+    }
+
+    [Fact]
+    public void FailedMutationLeavesFileUntouched()
+    {
+        using var tmp = new TempDir();
+        var path = tmp.File("config.json");
+        ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = @"C:.exe" }));
+        var before = File.ReadAllText(path);
+
+        Assert.Throws<InvalidOperationException>(() => ConfigStore.Update(path, c =>
+        {
+            c.Lists.Clear();
+            throw new InvalidOperationException();
+        }));
+
+        Assert.Equal(before, File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void ListsDifferingOnlyByCaseAreBothKept()
+    {
+        using var tmp = new TempDir();
+        var path = tmp.File("config.json");
+        File.WriteAllText(path, """{"lists":{"Work":[{"target":"a.exe"}],"work":[{"target":"b.exe"}]},"presets":{"x":{},"X":{}}}""");
+
+        Assert.True(ConfigStore.TryLoad(path, out var config, out var error), error);
+
+        Assert.Single(config.GetList("Work"));
+        Assert.Single(config.GetList("work 2"));
+    }
+
+    [Fact]
+    public void BreaksSurviveSaveAndAreNotApps()
+    {
+        using var tmp = new TempDir();
+        var path = tmp.File("config.json");
+        ConfigStore.Update(path, c =>
+        {
+            c.Insert(null, new Entry { Target = "a.exe" });
+            c.Insert(null, new Entry { Break = ListBreak.Page });
+            c.Insert(null, new Entry { Target = "b.exe" });
+        });
+
+        var config = ConfigStore.Load(path);
+
+        Assert.Equal(3, config.GetList(null).Count);
+        Assert.Null(config.GetApp(null, 1));
+        Assert.Equal([Core.Paging.ListItemKind.App, Core.Paging.ListItemKind.PageBreak, Core.Paging.ListItemKind.App], config.LayoutOf(null));
+        Assert.Contains("\"break\": \"page\"", File.ReadAllText(path));
     }
 }

@@ -4,9 +4,12 @@ using ManagedLauncher.Core.Targets;
 
 namespace ManagedLauncher.Core.Press;
 
-public sealed record OperationResult(bool Success, string? Error = null)
+/// <param name="StartedPid">Process a launch created, when Windows reports one; lets callers follow what it starts.</param>
+public sealed record OperationResult(bool Success, string? Error = null, int? StartedPid = null)
 {
     public static readonly OperationResult Ok = new(true);
+
+    public static OperationResult Started(int? pid) => new(true, null, pid);
 
     public static OperationResult Fail(string error) => new(false, error);
 }
