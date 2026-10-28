@@ -154,13 +154,27 @@ public partial class MainWindow : Window
             return;
         var list = currentList;
         var on = ReturnAfterLaunchBox.IsChecked == true;
-        TryUpdate(c =>
-        {
-            if (on)
-                c.ListOptions[list] = new ListOptions { ReturnAfterLaunch = true };
-            else
-                c.ListOptions.Remove(list);
-        });
+        TryUpdate(c => c.UpdateOptions(list, o => o.ReturnAfterLaunch = on));
+    }
+
+    private void ListIcon_Click(object sender, RoutedEventArgs e)
+    {
+        var list = currentList;
+        var current = config.OptionsOf(list).Icon;
+        var picker = new IconPickerWindow(current, null, "Reset to default", config.GetList(list)) { Owner = this };
+        if (picker.ShowDialog() != true || picker.Chosen == current)
+            return;
+        if (TryUpdate(c => c.UpdateOptions(list, o => o.Icon = picker.Chosen)))
+            LoadOpenKeyPreview();
+    }
+
+    private void LoadOpenKeyPreview()
+    {
+        var list = currentList;
+        var icon = config.OptionsOf(list).Icon;
+        App.Shell.RunAsync(() => KeyImages.RenderOpen(list, icon)).ContinueWith(
+            t => { if (t.Status == TaskStatus.RanToCompletion && currentList == list) OpenKeyPreview.Source = t.Result; },
+            TaskScheduler.FromCurrentSynchronizationContext());
     }
 
     private void Deck_Changed(object sender, SelectionChangedEventArgs e)
@@ -186,6 +200,7 @@ public partial class MainWindow : Window
         filling = true;
         ReturnAfterLaunchBox.IsChecked = config.OptionsOf(currentList).ReturnAfterLaunch;
         filling = wasFilling;
+        LoadOpenKeyPreview();
         items = new ObservableCollection<AppItem>(config.GetList(currentList).Select(e => new AppItem(e)));
         listBaseline = Fingerprint(config.GetList(currentList));
         AppsBox.ItemsSource = items;
@@ -553,7 +568,7 @@ public partial class MainWindow : Window
     private int InsertIndex() => AppsBox.SelectedIndex >= 0 ? AppsBox.SelectedIndex + 1 : items.Count;
 
     private void AddChoices(IEnumerable<AppPickerWindow.Choice> choices, int at) =>
-        AddPlans(choices.Select(c => c.Entry is { } entry ? new PinAdvisor.PinPlan(entry, []) : PinAdvisor.Plan(c.Target, null)), at);
+        AddPlans(choices.Select(c => c.Plan), at);
 
     private void AddPaths(IEnumerable<string> paths, int at) => AddPlans(paths.Select(p => PinAdvisor.Plan(p, null)), at);
 

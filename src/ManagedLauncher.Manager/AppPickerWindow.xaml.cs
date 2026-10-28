@@ -7,8 +7,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using ManagedLauncher.Core.Icons;
-using ManagedLauncher.Core.Press;
-using ManagedLauncher.Core.Processes;
 using ManagedLauncher.Core.Targets;
 
 namespace ManagedLauncher.Manager;
@@ -40,78 +38,13 @@ public partial class AppPickerWindow : Window
 
     public IReadOnlyList<Choice> Chosen { get; private set; } = [];
 
-    /// <summary>
-    /// Start menu shortcuts and packaged (Store) apps. Shortcuts are offered as <c>.lnk</c> paths because installers
-    /// keep them current across updates; packaged apps have no shortcut file and are offered by AUMID.
-    /// </summary>
-    public static AppPickerWindow StartMenu() =>
-        new("Add from Start menu", "Start menu", Shortcuts().Concat(PackagedApps())
-            .GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.First())
-            .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList());
+    public static AppPickerWindow StartMenu() => new("Add from Start menu", "Start menu", Choices(AppCatalog.StartMenu()));
 
-    /// <summary>Installed Steam games, started through Steam and tracked by their install folder.</summary>
-    public static AppPickerWindow SteamGames() =>
-        new("Add Steam game", "Steam games", SteamLibrary.Games()
-            .Select(g => new Choice(g.Name, g.ToEntry().Target, g.InstallDir) { Entry = g.ToEntry(), IconFile = g.Icon })
-            .ToList());
+    public static AppPickerWindow SteamGames() => new("Add Steam game", "Steam games", Choices(AppCatalog.Steam()));
 
-    /// <summary>Apps showing a window right now, offered by exe path, or by AUMID when packaged.</summary>
-    public static AppPickerWindow Running()
-    {
-        var names = ShellItems.EnumerateApps()
-            .GroupBy(a => a.Aumid, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First().Name, StringComparer.OrdinalIgnoreCase);
-        var apps = RunningApps.Collect(WindowFinder.VisibleWindows(), new Win32ProcessSource().Snapshot(), names,
-            Environment.ProcessId, Describe);
-        return new("Add running app", "Running apps", apps.Select(a => new Choice(a.Name, a.Target, a.Detail)).ToList());
-    }
+    public static AppPickerWindow Running() => new("Add running app", "Running apps", Choices(AppCatalog.Running(Environment.ProcessId)));
 
-    private static string? Describe(string exe)
-    {
-        try
-        {
-            return System.Diagnostics.FileVersionInfo.GetVersionInfo(exe).FileDescription?.Trim();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
-    }
-
-    private static IEnumerable<Choice> Shortcuts()
-    {
-        string[] roots =
-        [
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
-            Environment.GetFolderPath(Environment.SpecialFolder.Programs),
-        ];
-        foreach (var root in roots.Where(Directory.Exists))
-        {
-            IEnumerable<string> files;
-            try
-            {
-                files = Directory.EnumerateFiles(root, "*.lnk", SearchOption.AllDirectories).ToList();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                continue;
-            }
-            foreach (var file in files)
-            {
-                var name = Path.GetFileNameWithoutExtension(file);
-                if (name.Contains("uninstall", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                yield return new Choice(name, file, Path.GetRelativePath(root, Path.GetDirectoryName(file)!));
-            }
-        }
-    }
-
-    private static IEnumerable<Choice> PackagedApps() =>
-        ShellItems.EnumerateApps()
-            .Where(a => a.Aumid.Contains('!'))
-            .Select(a => new Choice(a.Name, a.Aumid, "Store app"));
+    private static List<Choice> Choices(IReadOnlyList<AppChoice> apps) => apps.Select(a => new Choice(a)).ToList();
 
     private void LoadIcon(Choice choice)
     {
@@ -157,19 +90,17 @@ public partial class AppPickerWindow : Window
         DialogResult = Chosen.Count > 0;
     }
 
-    public sealed class Choice(string name, string target, string detail) : INotifyPropertyChanged
+    public sealed class Choice(AppChoice app) : INotifyPropertyChanged
     {
         private ImageSource? icon;
 
-        public string Name { get; } = name;
-        public string Target { get; } = target;
-        public string Detail { get; } = detail;
-
-        /// <summary>A ready entry to add as is; null means the target is planned like a dropped file.</summary>
-        public Core.Config.Entry? Entry { get; init; }
+        public string Name { get; } = app.Name;
+        public string Target { get; } = app.Entry.Target;
+        public string Detail { get; } = app.Detail;
+        public PinAdvisor.PinPlan Plan { get; } = app.Plan;
 
         /// <summary>Image to show as the choice's icon instead of the target's shell icon.</summary>
-        public string? IconFile { get; init; }
+        public string? IconFile { get; } = app.Entry.Icon;
 
         public ImageSource? Icon
         {

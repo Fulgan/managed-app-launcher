@@ -1,4 +1,5 @@
 using ManagedLauncher.Core.Config;
+using ManagedLauncher.Core.Interop;
 using ManagedLauncher.Core.Targets;
 
 namespace ManagedLauncher.Tests;
@@ -147,6 +148,32 @@ public class TargetTests
         Assert.Equal(lnk, resolved.LaunchFile);
         Assert.Equal(exe, resolved.MatchPath, ignoreCase: true);
         Assert.Equal("--flag", resolved.ShortcutArgs);
+    }
+
+    [Fact]
+    public void AdvertisedShortcutsResolveToInstalledFileOnMtaThread()
+    {
+        var installer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Installer");
+        var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+        var advertised = Directory.EnumerateFiles(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), "*.lnk", options)
+            .Where(lnk => RawShortcutTarget(lnk).StartsWith(installer, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.SkipWhen(advertised.Count == 0, "no MSI-advertised shortcut installed");
+
+        var targets = new List<string?>();
+        var thread = new Thread(() => targets.AddRange(advertised.Select(lnk => ShellLink.Read(lnk).TargetPath)));
+        thread.SetApartmentState(ApartmentState.MTA);
+        thread.Start();
+        thread.Join();
+
+        Assert.All(targets, target => Assert.False(target is null || target.StartsWith(installer, StringComparison.OrdinalIgnoreCase), target));
+    }
+
+    private static string RawShortcutTarget(string lnk)
+    {
+        var shellType = Type.GetTypeFromProgID("WScript.Shell")!;
+        dynamic shell = Activator.CreateInstance(shellType)!;
+        return (string)shell.CreateShortcut(lnk).TargetPath;
     }
 
     internal static void CreateShortcut(string lnk, string target, string args, string workDir)

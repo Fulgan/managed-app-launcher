@@ -7,7 +7,7 @@
   "Category": "Managed App Launcher",
   "CategoryIcon": "imgs/category",
   "Icon": "imgs/plugin",
-  "Version": "1.0.0.0",
+  "Version": "1.1.0.0",
   "CodePath": "malaunch-plugin.exe",
   "OS": [
     {

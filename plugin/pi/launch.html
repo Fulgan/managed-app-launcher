@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <script>window.connectElgatoStreamDeckSocket = (...args) => { window.earlyConnect = args; };</script>
   <title>Launch</title>
   <link rel="stylesheet" href="pi.css">
 </head>
@@ -12,6 +13,27 @@
       <input id="target" data-key="target" placeholder=".lnk, exe, app-*\x.exe or AUMID">
       <button id="browse" type="button">…</button>
       <input id="picker" type="file" accept=".lnk,.exe" hidden>
+    </div>
+  </div>
+  <div class="row">
+    <label for="pickSource">Pick from</label>
+    <select id="pickSource">
+      <option value="">choose a source…</option>
+      <option value="start">Start menu</option>
+      <option value="steam">Steam library</option>
+      <option value="running">running apps</option>
+    </select>
+  </div>
+  <div class="row picker" id="pickPanel" hidden>
+    <label></label>
+    <div>
+      <div class="with-button">
+        <input id="pickFilter" placeholder="filter">
+        <button id="pickClose" type="button" title="close">✕</button>
+      </div>
+      <div class="loading" id="pickLoading" hidden><span class="spinner"></span><span id="pickLoadingText"></span></div>
+      <select id="pickList" size="8"></select>
+      <div class="status" id="pickStatus"></div>
     </div>
   </div>
   <div class="row">
@@ -82,19 +104,43 @@
   </div>
   <div class="row">
     <label for="trackPath">Track exe</label>
-    <input id="trackPath" data-key="trackPath" placeholder="when the launched exe exits at once">
+    <input id="trackPath" data-key="trackPath" placeholder="process to watch if target only starts another exe">
   </div>
   <div class="row">
     <label for="icon">Icon file</label>
-    <input id="icon" data-key="icon" placeholder="from target">
+    <div class="with-button">
+      <input id="icon" data-key="icon" placeholder="from target">
+      <button id="iconOpen" type="button" title="pick an icon">…</button>
+      <input id="iconFile" type="file" accept=".exe,.dll,.ico,.png,.jpg,.jpeg,.bmp,.gif" hidden>
+    </div>
+  </div>
+  <div class="row picker" id="iconPanel" hidden>
+    <label></label>
+    <div>
+      <div class="buttons">
+        <button id="iconApp" type="button">App</button>
+        <button id="iconWindows" type="button">Windows</button>
+        <button id="iconBrowse" type="button">Browse…</button>
+        <button id="iconReset" type="button">Use app icon</button>
+        <button id="iconClose" type="button" title="close">✕</button>
+      </div>
+      <div class="source" id="iconSource"></div>
+      <div class="loading" id="iconLoading" hidden><span class="spinner"></span><span>Loading icons…</span></div>
+      <div class="icon-grid" id="iconGrid"></div>
+      <div class="status" id="iconStatus"></div>
+    </div>
   </div>
   <div class="info" id="info"></div>
 
   <script src="pi.js"></script>
   <script>
     bindFilePicker("browse", "picker", "target");
+    bindAppPicker({ source: "pickSource", panel: "pickPanel", filter: "pickFilter", list: "pickList", status: "pickStatus", close: "pickClose", loading: "pickLoading", loadingText: "pickLoadingText" });
+    bindIconPicker();
     onInfo = (info) => {
-      document.getElementById("info").innerHTML = describe(info);
+      if (Array.isArray(info.apps)) showApps(info);
+      else if (info.icons) showIcons(info);
+      else document.getElementById("info").innerHTML = describe(info);
     };
   </script>
 </body>

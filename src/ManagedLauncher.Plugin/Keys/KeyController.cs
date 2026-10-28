@@ -117,6 +117,15 @@ public sealed class KeyController
     /// <summary>Starts the manager window and reports whether it started; invoked by the "Manage apps…" button in the key settings and by the Manage key.</summary>
     public Func<bool>? OpenManager { get; set; }
 
+    /// <summary>Apps the property inspector can offer for a source (<see cref="AppCatalog"/>), off the event loop.</summary>
+    public Func<string, Task<IReadOnlyList<AppChoice>>>? ListApps { get; set; }
+
+    /// <summary>Icons of a file the property inspector can offer (<see cref="IconCatalog"/>), off the event loop.</summary>
+    public Func<string, Task<IReadOnlyList<IconChoice>>>? ListIcons { get; set; }
+
+    /// <summary>Icons per message to the property inspector; a whole Windows icon library at once makes one huge message.</summary>
+    internal const int IconChunk = 48;
+
     public int PageOf(string device) => pages.GetValueOrDefault(device);
 
     /// <summary>The key's own list, else the list an Open key chose, else the deck's dedicated list, else <c>default</c>.</summary>
@@ -179,8 +188,11 @@ public sealed class KeyController
                 if (keys.TryGetValue(ev.Context, out var changed))
                 {
                     changed.Update(ev);
+                    var started = time.GetTimestamp();
                     await FollowRenameAsync(changed).ConfigureAwait(false);
                     await RefreshAsync(ev.Context, force: true).ConfigureAwait(false);
+                    if (changed.Action == LaunchAction)
+                        log($"{changed.Describe()}: settings → {EntryFor(changed)?.Target ?? "(none)"}, drawn in {time.GetElapsedTime(started).TotalMilliseconds:0} ms");
                     await SendInfoAsync(changed).ConfigureAwait(false);
                 }
                 break;
@@ -194,6 +206,22 @@ public sealed class KeyController
             case "sendToPlugin" when ev.Payload.ValueKind == JsonValueKind.Object
                 && ev.Payload.TryGetProperty("request", out var request) && request.GetString() == "openManager":
                 OpenManager?.Invoke();
+                break;
+            case "sendToPlugin" when ev.Payload.ValueKind == JsonValueKind.Object
+                && ev.Payload.TryGetProperty("request", out var listRequest) && listRequest.GetString() == "listApps"
+                && ev.Payload.TryGetProperty("source", out var source) && source.ValueKind == JsonValueKind.String:
+                if (keys.TryGetValue(ev.Context, out var asking))
+                    Fire(() => SendAppsAsync(asking, source.GetString()!));
+                break;
+            case "sendToPlugin" when ev.Payload.ValueKind == JsonValueKind.Object
+                && ev.Payload.TryGetProperty("request", out var iconRequest) && iconRequest.GetString() == "listIcons":
+                if (keys.TryGetValue(ev.Context, out var iconKey))
+                {
+                    var iconSource = ev.Payload.TryGetProperty("source", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString()! : "default";
+                    var file = ev.Payload.TryGetProperty("file", out var f) && f.ValueKind == JsonValueKind.String ? f.GetString() : null;
+                    var seq = TryGetInt(ev.Payload, "seq", out var n) ? n : 0;
+                    Fire(() => SendIconsAsync(iconKey, iconSource, file, seq));
+                }
                 break;
             case "propertyInspectorDidAppear":
             case "sendToPlugin":
@@ -396,7 +424,10 @@ public sealed class KeyController
         var (decision, result) = (outcome.Decision, outcome.Result);
         log($"{key.Describe()}: {(isLong ? "long" : "short")} press, running={outcome.Running} → {decision}");
         if (outcome.Launched)
+        {
+            tracker.Refresh();
             await RefreshAsync(key.Context, force: false).ConfigureAwait(false);
+        }
 
         if (!result.Success)
         {
@@ -456,7 +487,16 @@ public sealed class KeyController
         if (key.Action == OpenAction)
         {
             var list = config().ResolveList(key.ListSetting);
-            await SetIfChangedAsync(key, null, null, ($"open {list}", images.Open(list)), force).ConfigureAwait(false);
+            if (ListIconOf(key) is { } icon)
+            {
+                var image = await images.OpenAsync(list, icon).ConfigureAwait(false);
+                await SetIfChangedAsync(key, null, null, ($"open {list}|{icon}", image), force).ConfigureAwait(false);
+            }
+            else if (key.LastLook is not null)
+            {
+                await deck.SetImageAsync(key.Context, null).ConfigureAwait(false);
+                key.LastLook = null;
+            }
             return;
         }
         if (key.Action == ManageAction)
@@ -543,6 +583,99 @@ public sealed class KeyController
             },
         };
         return deck.SendToPropertyInspectorAsync(key.Action, key.Context, payload);
+    }
+
+    private async Task SendAppsAsync(Key key, string source)
+    {
+        var payload = new JsonObject { ["source"] = source };
+        try
+        {
+            var apps = ListApps is null ? [] : await ListApps(source).ConfigureAwait(false);
+            payload["apps"] = new JsonArray(apps.Select(a => (JsonNode)new JsonObject
+            {
+                ["name"] = a.Name,
+                ["detail"] = a.Detail,
+                ["entry"] = JsonSerializer.SerializeToNode(a.Entry, ConfigStore.JsonOptions),
+            }).ToArray());
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            log($"list {source} apps failed: {ex.Message}");
+            payload["apps"] = new JsonArray();
+            payload["error"] = ex.Message;
+        }
+        await deck.SendToPropertyInspectorAsync(key.Action, key.Context, payload).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Sends the icons of the requested file in chunks. Sources: <c>app</c> = the key's program file, <c>windows</c> =
+    /// the Windows icon library, <c>file</c> = a path, <c>default</c> = the current custom icon's file, else app, else windows.
+    /// </summary>
+    private async Task SendIconsAsync(Key key, string source, string? path, int seq)
+    {
+        var entry = EntryFor(key);
+        var appFile = entry is null ? null : AppIconFile(entry);
+        var current = entry?.Icon is { } icon ? IconExtractor.ParseIconRef(TargetResolver.Expand(icon)) : default((string File, int? Index)?);
+        var file = source switch
+        {
+            "app" => appFile,
+            "windows" => IconCatalog.WindowsIcons,
+            "file" => path is null ? null : TargetResolver.Expand(path),
+            _ => current?.File ?? appFile ?? IconCatalog.WindowsIcons,
+        };
+
+        JsonObject Reply(int offset, int total, bool done) => new()
+        {
+            ["seq"] = seq,
+            ["iconFile"] = file,
+            ["appFile"] = appFile,
+            ["selected"] = current is { } c && string.Equals(c.File, file, StringComparison.OrdinalIgnoreCase) ? c.Index ?? -1 : null,
+            ["offset"] = offset,
+            ["total"] = total,
+            ["done"] = done,
+        };
+
+        IReadOnlyList<IconChoice> icons;
+        try
+        {
+            icons = file is null || ListIcons is null ? [] : await ListIcons(file).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            log($"list icons of {file} failed: {ex.Message}");
+            var failed = Reply(0, 0, true);
+            failed["icons"] = new JsonArray();
+            failed["error"] = ex.Message;
+            await deck.SendToPropertyInspectorAsync(key.Action, key.Context, failed).ConfigureAwait(false);
+            return;
+        }
+
+        var offset = 0;
+        do
+        {
+            var chunk = icons.Skip(offset).Take(IconChunk).ToList();
+            var reply = Reply(offset, icons.Count, offset + chunk.Count >= icons.Count);
+            reply["icons"] = new JsonArray(chunk.Select(i => (JsonNode)new JsonObject
+            {
+                ["index"] = i.Index,
+                ["png"] = Convert.ToBase64String(i.Png),
+            }).ToArray());
+            if (file is null)
+                reply["error"] = "this app has no program file to take icons from";
+            await deck.SendToPropertyInspectorAsync(key.Action, key.Context, reply).ConfigureAwait(false);
+            offset += chunk.Count;
+        } while (offset < icons.Count);
+    }
+
+    private string? ListIconOf(Key key) =>
+        config().OptionsOf(key.ListSetting).Icon is { } icon && !string.IsNullOrWhiteSpace(icon) ? TargetResolver.Expand(icon) : null;
+
+    /// <summary>The program file whose icons the key's app offers: the exe behind a shortcut, else the launched file.</summary>
+    private static string? AppIconFile(Entry entry)
+    {
+        var resolved = TargetResolver.Resolve(entry);
+        var file = resolved.ShortcutExe ?? resolved.LaunchFile;
+        return file is not null && File.Exists(file) ? file : null;
     }
 
     /// <summary>The bundled launcher profile for this device: by its type, else by its key layout; null when none fits.</summary>

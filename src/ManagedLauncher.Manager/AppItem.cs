@@ -34,7 +34,7 @@ public sealed class AppItem(Entry entry) : INotifyPropertyChanged
     {
         ListBreak.Row => "Row break",
         ListBreak.Page => "Page break",
-        _ => Entry.Title ?? DefaultName(Entry),
+        _ => Entry.Title ?? AppNames.Default(Entry),
     };
 
     public string Target => Entry.Break switch
@@ -55,16 +55,6 @@ public sealed class AppItem(Entry entry) : INotifyPropertyChanged
         Changed(nameof(Target));
         Changed(nameof(Problem));
         Changed(nameof(HasProblem));
-    }
-
-    public static string DefaultName(Entry entry)
-    {
-        var target = entry.Target.Trim('"');
-        if (target.StartsWith(TargetResolver.AppsFolderPrefix, StringComparison.OrdinalIgnoreCase))
-            target = target[TargetResolver.AppsFolderPrefix.Length..];
-        if (TargetKindDetector.Detect(target) == TargetKind.Aumid)
-            return Core.Icons.ShellItems.GetDisplayName(TargetResolver.AppsFolderPrefix + target) ?? target;
-        return Path.GetFileNameWithoutExtension(target);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

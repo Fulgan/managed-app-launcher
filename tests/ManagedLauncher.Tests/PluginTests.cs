@@ -287,17 +287,53 @@ public class PluginTests
     }
 
     [Fact]
-    public async Task OpenKeyImageShowsItsList()
+    public async Task OpenKeyWithoutListIconKeepsStreamDecksImage()
     {
         using var h = new Harness();
         h.Config.EnsureList("games");
 
         await h.HandleAsync(Appear("o1", 0, 0, settings: """{"list":"games"}""", action: KeyController.OpenAction));
         await h.HandleAsync(Appear("o2", 1, 0, action: KeyController.OpenAction));
+        await h.Controller.OnConfigChangedAsync();
+        await h.Controller.IdleAsync();
 
-        Assert.Equal("open games", FindIcon(h, "o1"));
-        Assert.Equal("open default", FindIcon(h, "o2"));
+        Assert.DoesNotContain(h.Deck.Calls, c => c.Item1 is "image" or "title" && c.Item2 is "o1" or "o2");
+    }
+
+    [Fact]
+    public async Task OpenKeyShowsItsListIcon()
+    {
+        using var h = new Harness();
+        h.Config.EnsureList("games");
+        h.Config.UpdateOptions("games", o => o.Icon = @"C:\icons\games.ico");
+        h.Config.UpdateOptions(AppConfig.DefaultListName, o => o.Icon = "stock:home");
+
+        await h.HandleAsync(Appear("o1", 0, 0, settings: """{"list":"games"}""", action: KeyController.OpenAction));
+        await h.HandleAsync(Appear("o2", 1, 0, action: KeyController.OpenAction));
+
+        Assert.Equal(@"open games C:\icons\games.ico", FindIcon(h, "o1"));
+        Assert.Equal("open default stock:home", FindIcon(h, "o2"));
         Assert.Contains(("title", "o1", null), h.Deck.Calls);
+    }
+
+    [Fact]
+    public async Task OpenKeyRepaintsWhenListIconChangesAndResetsOnceWhenRemoved()
+    {
+        using var h = new Harness();
+        h.Config.EnsureList("games");
+        await h.HandleAsync(Appear("o1", 0, 0, settings: """{"list":"games"}""", action: KeyController.OpenAction));
+
+        h.Config.UpdateOptions("games", o => o.Icon = @"C:\icons\games.ico");
+        await h.Controller.OnConfigChangedAsync();
+        await h.Controller.IdleAsync();
+        Assert.Equal(@"open games C:\icons\games.ico", FindIcon(h, "o1"));
+
+        h.Config.UpdateOptions("games", o => o.Icon = null);
+        await h.Controller.OnConfigChangedAsync();
+        await h.Controller.OnConfigChangedAsync();
+        await h.Controller.IdleAsync();
+        var images = h.Deck.Calls.Where(c => c.Item1 == "image" && c.Item2 == "o1").Select(c => c.Item3).ToList();
+        Assert.Equal([@"open games C:\icons\games.ico", null], images);
     }
 
     [Fact]
@@ -487,6 +523,46 @@ public class PluginTests
     }
 
     [Fact]
+    public async Task V55_RelaunchOfRunningAppRepaintsRunningOnceItsWindowShows()
+    {
+        using var h = new Harness();
+        var exe = h.AddApp("tray");
+        var windowChecks = 0;
+        h.Controller.HasWindow = _ => ++windowChecks > 1;
+        h.Operations.CanFocus = false;
+        h.Source.Processes = [new ProcessInfo(42, exe, null, DateTime.UtcNow.AddMinutes(-1))];
+        var key = KeyController.Key.From(Appear("k0", 0, 0));
+        h.Tracker.Refresh();
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        Assert.Equal(RunState.Running, h.Images.LastVisual!.State);
+
+        await h.Controller.ExecuteAsync(key, isLong: false);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, h.Operations.Launches);
+        Assert.Equal(RunState.Running, h.Images.LastVisual!.State);
+    }
+
+    [Fact]
+    public async Task V55_FocusingARunningAppDoesNotShowStarting()
+    {
+        using var h = new Harness();
+        var exe = h.AddApp("front");
+        h.Controller.HasWindow = _ => false;
+        h.Operations.CanFocus = true;
+        h.Source.Processes = [new ProcessInfo(42, exe, null, DateTime.UtcNow.AddMinutes(-1))];
+        var key = KeyController.Key.From(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k0", 0, 0));
+
+        await h.Controller.ExecuteAsync(key, isLong: false);
+
+        Assert.Equal(0, h.Operations.Launches);
+        Assert.Equal(RunState.Running, h.Controller.StateOf(key, h.Tracker.Refresh()));
+        Assert.DoesNotContain(h.Images.Visuals, v => v.State == RunState.Starting);
+    }
+
+    [Fact]
     public async Task ProcessesStartedByALaunchStubCountAsTheApp()
     {
         using var h = new Harness();
@@ -583,10 +659,130 @@ public class PluginTests
     }
 
     [Fact]
+    public async Task ListAppsRequestAnswersPropertyInspectorWithEntries()
+    {
+        using var h = new Harness();
+        string? asked = null;
+        h.Controller.ListApps = source =>
+        {
+            asked = source;
+            return Task.FromResult<IReadOnlyList<AppChoice>>(
+            [
+                new AppChoice("Game", @"D:\games\x", new PinAdvisor.PinPlan(new Entry { Target = "steam://rungameid/7", Kind = TargetKind.Url, TrackPath = @"D:\games\x\" }, [])),
+            ]);
+        };
+        await h.HandleAsync(Appear("ctx", 0, 0, action: KeyController.LaunchAction));
+
+        await h.HandleAsync(Event("sendToPlugin", "ctx", KeyController.LaunchAction, """{"request":"listApps","source":"steam"}"""));
+
+        Assert.Equal("steam", asked);
+        var reply = h.Deck.Calls.Last(c => c.Item1 == "pi" && c.Item3!.Contains("\"apps\"")).Item3!;
+        var payload = JsonNode.Parse(reply)!;
+        Assert.Equal("steam", (string?)payload["source"]);
+        var app = payload["apps"]![0]!;
+        Assert.Equal("Game", (string?)app["name"]);
+        Assert.Equal("steam://rungameid/7", (string?)app["entry"]!["target"]);
+        Assert.Equal("url", (string?)app["entry"]!["kind"]);
+        Assert.Equal(@"D:\games\x\", (string?)app["entry"]!["trackPath"]);
+    }
+
+    [Fact]
+    public async Task EachSettingsChangeFromPropertyInspectorRepaintsLaunchKey()
+    {
+        using var h = new Harness();
+        var first = h.Tmp.Touch("First.exe").Replace("\\", "\\\\");
+        var second = h.Tmp.Touch("Second.exe").Replace("\\", "\\\\");
+        await h.HandleAsync(Appear("ctx", 0, 0, action: KeyController.LaunchAction));
+
+        await h.HandleAsync(Event("didReceiveSettings", "ctx", KeyController.LaunchAction, $$$"""{"settings":{"target":"{{{first}}}","kind":"exe"}}"""));
+        Assert.EndsWith("First.exe", FindIcon(h, "ctx"));
+
+        await h.HandleAsync(Event("didReceiveSettings", "ctx", KeyController.LaunchAction, $$$"""{"settings":{"target":"{{{second}}}","kind":"exe"}}"""));
+        Assert.EndsWith("Second.exe", FindIcon(h, "ctx"));
+    }
+
+    private static List<JsonNode> IconReplies(Harness h) =>
+        h.Deck.Calls.Where(c => c.Item1 == "pi" && c.Item3!.Contains("\"icons\"")).Select(c => JsonNode.Parse(c.Item3!)!).ToList();
+
+    [Fact]
+    public async Task IconPickerOpensOnCurrentIconFileInChunks()
+    {
+        using var h = new Harness();
+        var exe = h.Tmp.Touch("App.exe").Replace("\\", "\\\\");
+        var library = h.Tmp.Touch("Icons.dll");
+        string? asked = null;
+        h.Controller.ListIcons = file =>
+        {
+            asked = file;
+            return Task.FromResult<IReadOnlyList<IconChoice>>(Enumerable.Range(0, 100).Select(i => new IconChoice(i, [1, 2, 3])).ToList());
+        };
+        var settings = $$$"""{"target":"{{{exe}}}","icon":"{{{library.Replace("\\", "\\\\")}}},7"}""";
+        await h.HandleAsync(Appear("ctx", 0, 0, settings, KeyController.LaunchAction));
+
+        await h.HandleAsync(Event("sendToPlugin", "ctx", KeyController.LaunchAction, """{"request":"listIcons","source":"default","seq":3}"""));
+
+        Assert.Equal(library, asked);
+        var replies = IconReplies(h);
+        Assert.Equal([48, 48, 4], replies.Select(r => r["icons"]!.AsArray().Count));
+        Assert.Equal([false, false, true], replies.Select(r => (bool)r["done"]!));
+        Assert.All(replies, r => Assert.Equal(3, (int)r["seq"]!));
+        Assert.All(replies, r => Assert.Equal(7, (int)r["selected"]!));
+        Assert.EndsWith("App.exe", (string?)replies[0]["appFile"]);
+        Assert.Equal(48, (int)replies[1]["offset"]!);
+    }
+
+    [Fact]
+    public async Task IconPickerAppSourceUsesTheKeysProgramFile()
+    {
+        using var h = new Harness();
+        var exe = h.Tmp.Touch("App.exe");
+        string? asked = null;
+        h.Controller.ListIcons = file => { asked = file; return Task.FromResult<IReadOnlyList<IconChoice>>([new IconChoice(0, [1])]); };
+        await h.HandleAsync(Appear("ctx", 0, 0, $$"""{"target":"{{exe.Replace("\\", "\\\\")}}"}""", KeyController.LaunchAction));
+
+        await h.HandleAsync(Event("sendToPlugin", "ctx", KeyController.LaunchAction, """{"request":"listIcons","source":"app","seq":1}"""));
+
+        Assert.Equal(exe, asked);
+        var reply = Assert.Single(IconReplies(h));
+        Assert.Null(reply["selected"]);
+        Assert.Null(reply["error"]);
+    }
+
+    [Fact]
+    public async Task IconPickerReportsStoreAppHasNoProgramFile()
+    {
+        using var h = new Harness();
+        h.Controller.ListIcons = _ => throw new InvalidOperationException("must not be asked");
+        await h.HandleAsync(Appear("ctx", 0, 0, """{"target":"Pkg_x!App","kind":"aumid"}""", KeyController.LaunchAction));
+
+        await h.HandleAsync(Event("sendToPlugin", "ctx", KeyController.LaunchAction, """{"request":"listIcons","source":"app","seq":1}"""));
+
+        var reply = Assert.Single(IconReplies(h));
+        Assert.True((bool)reply["done"]!);
+        Assert.Empty(reply["icons"]!.AsArray());
+        Assert.NotNull((string?)reply["error"]);
+        Assert.Null(reply["appFile"]);
+    }
+
+    [Fact]
+    public async Task ListAppsFailureReportsErrorToPropertyInspector()
+    {
+        using var h = new Harness();
+        h.Controller.ListApps = _ => throw new InvalidOperationException("no steam");
+        await h.HandleAsync(Appear("ctx", 0, 0, action: KeyController.LaunchAction));
+
+        await h.HandleAsync(Event("sendToPlugin", "ctx", KeyController.LaunchAction, """{"request":"listApps","source":"steam"}"""));
+
+        var reply = JsonNode.Parse(h.Deck.Calls.Last(c => c.Item1 == "pi" && c.Item3!.Contains("\"apps\"")).Item3!)!;
+        Assert.Equal("no steam", (string?)reply["error"]);
+        Assert.Empty(reply["apps"]!.AsArray());
+    }
+
+    [Fact]
     public async Task BrokenTargetRendersBrokenVisual()
     {
         using var h = new Harness();
-        h.Config.EnsureList(null).Add(new Entry { Target = @"C:\Users\steph\AppData\Local\Vivaldi\Application\vivaldi.exe" });
+        h.Config.EnsureList(null).Add(new Entry { Target = h.Tmp.File("missing.exe") });
 
         await h.HandleAsync(Appear("ctx", 0, 0));
 
@@ -684,7 +880,7 @@ public class PluginTests
         public string Back => "back";
 
         public string Manage => "manage";
-        public string Open(string list) => $"open {list}";
+        public Task<string> OpenAsync(string list, string icon) => Task.FromResult($"open {list} {icon}");
 
     }
 

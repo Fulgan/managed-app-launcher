@@ -110,6 +110,13 @@
             <CheckBox x:Name="ReturnAfterLaunchBox" Style="{StaticResource Switch}" Content="Return after launch" Margin="0,8,0,0"
                       HorizontalAlignment="Left" Checked="ReturnAfterLaunch_Changed" Unchecked="ReturnAfterLaunch_Changed"
                       ToolTip="After a launch, the deck returns to the previous profile, or to the first page" />
+            <Button Style="{StaticResource Plain}" Click="ListIcon_Click" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="6,4"
+                    ToolTip="Icon of this list's Open Launcher keys">
+              <StackPanel Orientation="Horizontal">
+                <Image x:Name="OpenKeyPreview" Width="36" Height="36" Margin="0,0,8,0" />
+                <TextBlock Text="Set a custom icon…" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button>
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
             <Button Style="{StaticResource Icon}" AutomationProperties.Name="Move up" Content="&#xE74A;" Click="Up_Click" ToolTip="Move up" Margin="0,0,6,0" />

@@ -309,6 +309,23 @@ public class ConfigTests
     }
 
     [Fact]
+    public void ListIconFollowsCopyAndDefaultOptionsAreDropped()
+    {
+        var config = new AppConfig().Normalize();
+        config.EnsureList("work");
+
+        config.UpdateOptions("work", o => o.Icon = "work.ico");
+        config.UpdateOptions("work", o => o.ReturnAfterLaunch = true);
+        var copy = config.CopyList("work");
+
+        Assert.True(config.OptionsOf(copy) is { Icon: "work.ico", ReturnAfterLaunch: true });
+        config.UpdateOptions("work", o => o.ReturnAfterLaunch = false);
+        Assert.Equal("work.ico", config.OptionsOf("work").Icon);
+        config.UpdateOptions("work", o => o.Icon = null);
+        Assert.False(config.ListOptions.ContainsKey("work"));
+    }
+
+    [Fact]
     public async Task ConcurrentUpdatesAllLand()
     {
         using var tmp = new TempDir();

@@ -18,8 +18,8 @@ public interface IKeyImages
 
     string Manage { get; }
 
-    /// <summary>Open Launcher key labelled with <paramref name="list"/>.</summary>
-    string Open(string list);
+    /// <summary>Open Launcher key showing the list's <paramref name="icon"/> above its name; the launcher glyph when it can't load.</summary>
+    Task<string> OpenAsync(string list, string icon);
 
 }
 
@@ -52,25 +52,34 @@ public sealed class ShellKeyImages(StaWorker sta) : IKeyImages
 
     private readonly ConcurrentDictionary<string, string> opens = new();
 
-    public string Open(string list) => opens.GetOrAdd(list, l => Convert.ToBase64String(KeyRenderer.RenderOpenPng(l)));
+    public async Task<string> OpenAsync(string list, string icon)
+    {
+        if (StockIcons.Parse(icon) is { } glyph)
+            return opens.GetOrAdd($"{list}|{glyph}", _ => Convert.ToBase64String(KeyRenderer.RenderOpenPng(list, glyph)));
+        var image = await LoadAsync(icon, custom: true).ConfigureAwait(false);
+        if (image is null)
+            return opens.GetOrAdd(list, l => Convert.ToBase64String(KeyRenderer.RenderOpenPng(l)));
+        byte[] png;
+        lock (render)
+            png = KeyRenderer.RenderOpenPng(list, image);
+        return Convert.ToBase64String(png);
+    }
 
     public async Task<string> RenderAsync(KeyVisual visual, string? customIcon)
     {
         var source = customIcon ?? visual.IconSource;
-        Bitmap? icon = null;
-        if (source is not null)
-        {
-            var load = icons.GetOrAdd(CacheKey(source), _ => new Lazy<Task<Bitmap?>>(() => sta.RunAsync(() => customIcon is not null
-                ? IconExtractor.LoadCustomIcon(customIcon)
-                : IconExtractor.ExtractBest(source))));
-            icon = await load.Value.ConfigureAwait(false);
-        }
+        var icon = source is null ? null : await LoadAsync(source, custom: customIcon is not null).ConfigureAwait(false);
 
         byte[] png;
         lock (render)
             png = KeyRenderer.RenderPng(icon, visual);
         return Convert.ToBase64String(png);
     }
+
+    private Task<Bitmap?> LoadAsync(string source, bool custom) =>
+        icons.GetOrAdd(CacheKey(source), _ => new Lazy<Task<Bitmap?>>(() => sta.RunAsync(() => custom
+            ? IconExtractor.LoadCustomIcon(source)
+            : IconExtractor.ExtractBest(source)))).Value;
 
     private static string CacheKey(string source)
     {

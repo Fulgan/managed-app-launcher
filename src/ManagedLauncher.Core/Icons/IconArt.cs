@@ -3,7 +3,7 @@ using System.Drawing.Drawing2D;
 
 namespace ManagedLauncher.Core.Icons;
 
-public enum Glyph { Launcher, Return, Next, Gear, Play, Plus, Slot, Question }
+public enum Glyph { Launcher, Return, Next, Gear, Play, Plus, Slot, Question, Folder, Star, Home, Games, Media, Music, Work, Code, Tools, Web, Chat, Graphics }
 
 /// <summary>
 /// The one drawing vocabulary for every icon the plugin and the manager ship or render: the brand tile (blue
@@ -162,6 +162,118 @@ public static class IconArt
                 using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
                     g.DrawString("?", font, brush, box, format);
                 break;
+            default:
+                DrawStockGlyph(g, glyph, box, ink);
+                break;
+        }
+    }
+
+    private static void DrawStockGlyph(Graphics g, Glyph glyph, RectangleF box, Color ink)
+    {
+        var s = box.Width;
+        PointF P(float x, float y) => new(box.X + x * s, box.Y + y * s);
+        RectangleF R(float x, float y, float w, float h) => new(box.X + x * s, box.Y + y * s, w * s, h * s);
+        using var brush = new SolidBrush(ink);
+        using var pen = new Pen(ink, s * Stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var thin = new Pen(ink, s * 0.08f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var edge = new Pen(ink, s * 0.06f) { LineJoin = LineJoin.Round };
+        using var shape = new GraphicsPath(FillMode.Alternate);
+
+        switch (glyph)
+        {
+            case Glyph.Folder:
+                shape.AddPolygon([P(0.1f, 0.24f), P(0.4f, 0.24f), P(0.48f, 0.33f), P(0.9f, 0.33f), P(0.9f, 0.8f), P(0.1f, 0.8f)]);
+                g.DrawPath(edge, shape);
+                g.FillPath(brush, shape);
+                break;
+            case Glyph.Star:
+                var star = new PointF[10];
+                for (var i = 0; i < star.Length; i++)
+                {
+                    var r = i % 2 == 0 ? 0.42f : 0.18f;
+                    var a = Math.PI * i / 5;
+                    star[i] = P(0.5f + r * (float)Math.Sin(a), 0.53f - r * (float)Math.Cos(a));
+                }
+                shape.AddPolygon(star);
+                g.DrawPath(edge, shape);
+                g.FillPath(brush, shape);
+                break;
+            case Glyph.Home:
+                shape.AddPolygon([P(0.5f, 0.14f), P(0.88f, 0.48f), P(0.78f, 0.48f), P(0.78f, 0.84f), P(0.22f, 0.84f), P(0.22f, 0.48f), P(0.12f, 0.48f)]);
+                shape.AddRectangle(R(0.42f, 0.6f, 0.16f, 0.24f));
+                g.DrawPolygon(edge, [P(0.5f, 0.14f), P(0.88f, 0.48f), P(0.12f, 0.48f)]);
+                g.FillPath(brush, shape);
+                break;
+            case Glyph.Games:
+                using (var body = RoundRect(R(0.08f, 0.28f, 0.84f, 0.46f), s * 0.2f))
+                    shape.AddPath(body, false);
+                shape.AddRectangle(R(0.215f, 0.46f, 0.17f, 0.06f));
+                shape.AddRectangle(R(0.27f, 0.405f, 0.06f, 0.17f));
+                shape.AddEllipse(R(0.62f, 0.38f, 0.09f, 0.09f));
+                shape.AddEllipse(R(0.71f, 0.49f, 0.09f, 0.09f));
+                g.FillPath(brush, shape);
+                break;
+            case Glyph.Media:
+                using (var screen = RoundRect(R(0.1f, 0.2f, 0.8f, 0.6f), s * 0.12f))
+                    shape.AddPath(screen, false);
+                shape.AddPolygon([P(0.42f, 0.36f), P(0.64f, 0.5f), P(0.42f, 0.64f)]);
+                g.FillPath(brush, shape);
+                break;
+            case Glyph.Music:
+                g.FillEllipse(brush, R(0.16f, 0.62f, 0.24f, 0.2f));
+                g.FillEllipse(brush, R(0.58f, 0.54f, 0.24f, 0.2f));
+                g.DrawLine(thin, P(0.36f, 0.72f), P(0.36f, 0.26f));
+                g.DrawLine(thin, P(0.78f, 0.64f), P(0.78f, 0.18f));
+                shape.AddPolygon([P(0.32f, 0.2f), P(0.82f, 0.1f), P(0.82f, 0.24f), P(0.32f, 0.34f)]);
+                g.FillPath(brush, shape);
+                break;
+            case Glyph.Work:
+                using (var handle = RoundRect(R(0.36f, 0.16f, 0.28f, 0.2f), s * 0.06f))
+                    g.DrawPath(thin, handle);
+                using (var bag = RoundRect(R(0.1f, 0.3f, 0.8f, 0.52f), s * 0.1f))
+                    shape.AddPath(bag, false);
+                shape.AddRectangle(R(0.1f, 0.5f, 0.8f, 0.05f));
+                g.FillPath(brush, shape);
+                break;
+            case Glyph.Code:
+                g.DrawLines(pen, [P(0.3f, 0.28f), P(0.1f, 0.5f), P(0.3f, 0.72f)]);
+                g.DrawLines(pen, [P(0.7f, 0.28f), P(0.9f, 0.5f), P(0.7f, 0.72f)]);
+                g.DrawLine(thin, P(0.58f, 0.2f), P(0.42f, 0.8f));
+                break;
+            case Glyph.Tools:
+                using (var handle = new Pen(ink, s * 0.16f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    g.DrawLine(handle, P(0.18f, 0.82f), P(0.6f, 0.4f));
+                shape.AddEllipse(R(0.42f, 0.1f, 0.48f, 0.48f));
+                using (var jaw = new GraphicsPath())
+                using (var head = new Region(shape))
+                {
+                    jaw.AddPolygon([P(0.6f, 0.28f), P(0.72f, 0.4f), P(1f, 0.12f), P(0.88f, 0f)]);
+                    head.Exclude(jaw);
+                    g.FillRegion(brush, head);
+                }
+                break;
+            case Glyph.Web:
+                g.DrawEllipse(thin, R(0.12f, 0.12f, 0.76f, 0.76f));
+                g.DrawEllipse(thin, R(0.33f, 0.12f, 0.34f, 0.76f));
+                g.DrawLine(thin, P(0.12f, 0.5f), P(0.88f, 0.5f));
+                g.DrawLine(thin, P(0.2f, 0.3f), P(0.8f, 0.3f));
+                g.DrawLine(thin, P(0.2f, 0.7f), P(0.8f, 0.7f));
+                break;
+            case Glyph.Chat:
+                using (var bubble = RoundRect(R(0.1f, 0.16f, 0.8f, 0.54f), s * 0.16f))
+                    g.FillPath(brush, bubble);
+                shape.AddPolygon([P(0.26f, 0.64f), P(0.46f, 0.64f), P(0.22f, 0.86f)]);
+                g.FillPath(brush, shape);
+                break;
+            case Glyph.Graphics:
+                shape.AddEllipse(R(0.1f, 0.14f, 0.8f, 0.72f));
+                shape.AddEllipse(R(0.52f, 0.56f, 0.18f, 0.18f));
+                shape.AddEllipse(R(0.24f, 0.32f, 0.12f, 0.12f));
+                shape.AddEllipse(R(0.42f, 0.22f, 0.12f, 0.12f));
+                shape.AddEllipse(R(0.62f, 0.3f, 0.12f, 0.12f));
+                shape.AddEllipse(R(0.22f, 0.52f, 0.12f, 0.12f));
+                g.FillPath(brush, shape);
+                break;
         }
     }
 
@@ -204,7 +316,18 @@ public static class IconArt
         return path;
     }
 
-    private static readonly RectangleF KeyTile = new(14, 14, 116, 116);
+    private static readonly RectangleF KeyTile = new((KeyRenderer.Size - KeyRenderer.TileIconSize) / 2f, (KeyRenderer.Size - KeyRenderer.TileIconSize) / 2f, KeyRenderer.TileIconSize, KeyRenderer.TileIconSize);
+
+    public static Bitmap GlyphTile(Glyph glyph, int size)
+    {
+        var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using var g = Prepare(bitmap);
+        g.Clear(Color.Transparent);
+        DrawControlTile(g, new RectangleF(0, 0, size, size));
+        var glyphSize = size * 62f / KeyRenderer.TileIconSize;
+        DrawGlyph(g, glyph, new RectangleF((size - glyphSize) / 2, (size - glyphSize) / 2, glyphSize, glyphSize), Ink);
+        return bitmap;
+    }
 
     /// <summary>A 144 px control key: tile with a centred glyph.</summary>
     public static Bitmap ControlKey(Glyph glyph, bool placeholder = false)
@@ -258,7 +381,7 @@ public static class IconArt
     /// running dot of the brand mark, and the list name drawn under it. Null <paramref name="list"/> leaves the
     /// grid centred with no label.
     /// </summary>
-    public static Bitmap OpenKey(string? list)
+    public static Bitmap OpenKey(string? list, Glyph glyph = Glyph.Launcher)
     {
         const int size = KeyRenderer.Size;
         var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
@@ -269,20 +392,26 @@ public static class IconArt
         var glyphSize = labelled ? 52f : 62f;
         var centerY = labelled ? 60f : 72f;
         var box = new RectangleF(72 - glyphSize / 2, centerY - glyphSize / 2, glyphSize, glyphSize);
-        DrawGlyph(g, Glyph.Launcher, box, Ink);
-        var bottomLeft = LauncherCells(box)[3];
-        var dot = bottomLeft.Width * 0.42f;
-        using (var green = new SolidBrush(Green))
+        DrawGlyph(g, glyph, box, Ink);
+        if (glyph == Glyph.Launcher)
+        {
+            var bottomLeft = LauncherCells(box)[3];
+            var dot = bottomLeft.Width * 0.42f;
+            using var green = new SolidBrush(Green);
             g.FillEllipse(green, bottomLeft.X + (bottomLeft.Width - dot) / 2, bottomLeft.Y + (bottomLeft.Height - dot) / 2, dot, dot);
-        if (!labelled)
-            return bitmap;
+        }
+        if (labelled)
+            DrawListLabel(g, list!);
+        return bitmap;
+    }
 
+    public static void DrawListLabel(Graphics g, string list)
+    {
         using var font = new Font("Segoe UI Semibold", 17, FontStyle.Regular, GraphicsUnit.Pixel);
         using var ink = new SolidBrush(Muted);
         using var format = new StringFormat(StringFormatFlags.NoWrap) { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         g.DrawString(list, font, ink, new RectangleF(22, 96, 100, 24), format);
-        return bitmap;
     }
 
     /// <summary>Square transparent icon of one monochrome glyph, as Stream Deck expects for action list and category icons.</summary>
