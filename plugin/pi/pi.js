@@ -71,10 +71,10 @@ function saveSettings() {
   send("setSettings", settings);
 }
 
-// The Stream Deck file picker reports "C:\fakepath\name" URI-encoded; the
-// application substitutes the real path after the prefix.
+// The Stream Deck file picker reports "C:\fakepath\name" URI-encoded with
+// forward slashes; the application substitutes the real path after the prefix.
 function pickedPath(input) {
-  return decodeURIComponent(input.value.replace(/^C:\\fakepath\\/, ""));
+  return decodeURIComponent(input.value.replace(/^C:\\fakepath\\/, "")).replaceAll("/", "\\");
 }
 
 function bindFilePicker(buttonId, inputId, targetId) {
@@ -85,6 +85,147 @@ function bindFilePicker(buttonId, inputId, targetId) {
     document.getElementById(targetId).value = pickedPath(picker);
     saveSettings();
   });
+}
+
+const ENTRY_FIELDS = ["target", "kind", "title", "trackPath", "icon"];
+const SOURCE_NAMES = { start: "Start menu", steam: "Steam library", running: "running apps" };
+let picker = null;
+let pickedApps = [];
+let pendingSource = null;
+
+function bindAppPicker(ids) {
+  picker = Object.fromEntries(Object.entries(ids).map(([k, id]) => [k, document.getElementById(id)]));
+  picker.source.addEventListener("change", () => {
+    const source = picker.source.value;
+    if (!source) return;
+    picker.source.value = "";
+    pickedApps = [];
+    pendingSource = source;
+    picker.filter.value = "";
+    picker.list.replaceChildren();
+    showLoading(`Loading ${SOURCE_NAMES[source] || source}…`);
+    picker.panel.hidden = false;
+    send("sendToPlugin", { request: "listApps", source });
+  });
+  picker.filter.addEventListener("input", renderApps);
+  picker.close.addEventListener("click", closePicker);
+  picker.list.addEventListener("change", () => {
+    const app = pickedApps[picker.list.value];
+    if (app) applyEntry(app.entry);
+    closePicker();
+  });
+}
+
+function showLoading(text) {
+  picker.loadingText.textContent = text;
+  picker.loading.hidden = !text;
+  picker.list.hidden = !!text;
+  picker.filter.disabled = !!text;
+  picker.status.textContent = "";
+}
+
+function closePicker() {
+  pendingSource = null;
+  picker.panel.hidden = true;
+}
+
+function showApps(payload) {
+  if (payload.source !== pendingSource) return;
+  pendingSource = null;
+  pickedApps = payload.apps;
+  showLoading("");
+  picker.status.textContent = payload.error ? payload.error : pickedApps.length ? `${pickedApps.length} apps` : "nothing found";
+  renderApps();
+  picker.filter.focus();
+}
+
+function renderApps() {
+  const needle = picker.filter.value.trim().toLowerCase();
+  const options = [];
+  pickedApps.forEach((app, index) => {
+    if (needle && !`${app.name} ${app.detail}`.toLowerCase().includes(needle)) return;
+    const option = document.createElement("option");
+    option.value = index;
+    option.textContent = app.name;
+    option.title = app.detail;
+    options.push(option);
+  });
+  picker.list.replaceChildren(...options);
+}
+
+let iconPicker = null;
+let iconSeq = 0;
+let iconFile = null;
+
+function bindIconPicker() {
+  const el = (id) => document.getElementById(id);
+  iconPicker = { panel: el("iconPanel"), grid: el("iconGrid"), loading: el("iconLoading"), status: el("iconStatus"), source: el("iconSource"), app: el("iconApp") };
+  el("iconOpen").addEventListener("click", () => {
+    if (iconPicker.panel.hidden) requestIcons("default");
+    else iconPicker.panel.hidden = true;
+  });
+  iconPicker.app.addEventListener("click", () => requestIcons("app"));
+  el("iconWindows").addEventListener("click", () => requestIcons("windows"));
+  const browse = el("iconFile");
+  el("iconBrowse").addEventListener("click", () => browse.click());
+  browse.addEventListener("change", () => {
+    if (browse.value) requestIcons("file", pickedPath(browse));
+    browse.value = "";
+  });
+  el("iconReset").addEventListener("click", () => chooseIcon(""));
+  el("iconClose").addEventListener("click", () => { iconSeq++; iconPicker.panel.hidden = true; });
+}
+
+function requestIcons(source, file) {
+  iconSeq++;
+  iconFile = null;
+  iconPicker.grid.replaceChildren();
+  iconPicker.status.textContent = "";
+  iconPicker.source.textContent = file || "";
+  iconPicker.loading.hidden = false;
+  iconPicker.panel.hidden = false;
+  send("sendToPlugin", { request: "listIcons", source, file, seq: iconSeq });
+}
+
+function showIcons(payload) {
+  if (payload.seq !== iconSeq) return;
+  iconFile = payload.iconFile;
+  iconPicker.source.textContent = iconFile || "";
+  iconPicker.app.disabled = !payload.appFile;
+  for (const icon of payload.icons) {
+    const tile = document.createElement("button");
+    tile.type = "button";
+    tile.className = "icon-tile";
+    tile.title = icon.index === null ? iconFile : `${iconFile},${icon.index}`;
+    if (payload.selected !== null && payload.selected !== undefined && (icon.index ?? -1) === payload.selected) tile.classList.add("selected");
+    const img = document.createElement("img");
+    img.src = `data:image/png;base64,${icon.png}`;
+    tile.appendChild(img);
+    tile.addEventListener("click", () => chooseIcon(tile.title));
+    iconPicker.grid.appendChild(tile);
+  }
+  if (!payload.done) {
+    iconPicker.status.textContent = `${payload.offset + payload.icons.length} of ${payload.total} icons`;
+    return;
+  }
+  iconPicker.loading.hidden = true;
+  iconPicker.status.textContent = payload.error ? payload.error : payload.total ? `${payload.total} icons` : "no icons in this file";
+  iconPicker.grid.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
+}
+
+function chooseIcon(value) {
+  document.querySelector('[data-key="icon"]').value = value;
+  saveSettings();
+  iconSeq++;
+  iconPicker.panel.hidden = true;
+}
+
+function applyEntry(entry) {
+  for (const key of ENTRY_FIELDS) {
+    const field = document.querySelector(`[data-key="${key}"]`);
+    if (field) field.value = entry[key] === undefined || entry[key] === null ? "" : String(entry[key]);
+  }
+  saveSettings();
 }
 
 function fillPresets(select, presets) {
@@ -125,3 +266,5 @@ document.addEventListener("change", (e) => {
 function bindManagerButton(buttonId) {
   document.getElementById(buttonId).addEventListener("click", () => send("sendToPlugin", { request: "openManager" }));
 }
+
+if (window.earlyConnect) connectElgatoStreamDeckSocket(...window.earlyConnect);

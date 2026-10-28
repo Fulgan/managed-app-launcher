@@ -3,6 +3,7 @@ using ManagedLauncher.Core.Config;
 using ManagedLauncher.Core.Icons;
 using ManagedLauncher.Core.Press;
 using ManagedLauncher.Core.Processes;
+using ManagedLauncher.Core.Targets;
 using ManagedLauncher.Plugin.Keys;
 using ManagedLauncher.Plugin.StreamDeck;
 
@@ -10,8 +11,11 @@ namespace ManagedLauncher.Plugin;
 
 internal static class Program
 {
+    private const int PickerIconSize = 48;
+
     private static async Task<int> Main(string[] args)
     {
+        Directory.SetCurrentDirectory(AppPaths.WorkingDirectory);
         var migrated = AppPaths.MigrateLegacy();
         var log = new FileLog(Path.Combine(AppPaths.ConfigDirectory, "plugin.log"));
         if (migrated.Count > 0)
@@ -60,6 +64,8 @@ internal static class Program
         controller.AddDevices(registration.Info);
         var manager = ManagerLauncher.ForDesktop(Path.Combine(AppContext.BaseDirectory, "ManagedLauncher.Manager.exe"), log.Write);
         controller.OpenManager = manager.Open;
+        controller.ListApps = source => sta.RunAsync(() => AppCatalog.List(source));
+        controller.ListIcons = file => sta.RunAsync(() => IconCatalog.List(file, PickerIconSize));
 
         watcher.Changed += config =>
         {

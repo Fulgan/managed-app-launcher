@@ -61,6 +61,27 @@ public class ManifestTests
     }
 
     [Fact]
+    public void PropertyInspectorsAcceptConnectBeforePiJsLoads()
+    {
+        const string stub = "<script>window.connectElgatoStreamDeckSocket = (...args) => { window.earlyConnect = args; };</script>";
+        var pages = Manifest().GetProperty("Actions").EnumerateArray()
+            .Where(a => a.TryGetProperty("PropertyInspectorPath", out _))
+            .Select(a => a.GetProperty("PropertyInspectorPath").GetString()!)
+            .ToList();
+
+        Assert.NotEmpty(pages);
+        foreach (var page in pages)
+        {
+            var html = File.ReadAllText(RepoFile("plugin", page));
+            var head = html.IndexOf("<head>", StringComparison.Ordinal);
+            Assert.True(head >= 0, page);
+            Assert.Equal(html.IndexOf("<script", head, StringComparison.Ordinal), html.IndexOf(stub, StringComparison.Ordinal));
+            Assert.True(html.IndexOf(stub, StringComparison.Ordinal) < html.IndexOf("<link", StringComparison.Ordinal), page);
+        }
+        Assert.EndsWith("if (window.earlyConnect) connectElgatoStreamDeckSocket(...window.earlyConnect);", File.ReadAllText(RepoFile("plugin", "pi", "pi.js")).TrimEnd());
+    }
+
+    [Fact]
     public void ShippedManageKeyMatchesRuntimeDrawing()
     {
         using var shipped = new System.Drawing.Bitmap(RepoFile("plugin", "imgs", "key-manage@2x.png"));

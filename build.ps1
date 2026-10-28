@@ -53,8 +53,10 @@ if ($Install) {
     $legacy = Join-Path $plugins "com.fulgan.applauncher.sdPlugin"
     if (Test-Path $legacy) { Remove-Item $legacy -Recurse -Force }
     $target = Join-Path $plugins "$pluginId.sdPlugin"
-    if (Test-Path $target) { Remove-Item $target -Recurse -Force }
-    Copy-Item $folder $plugins -Recurse
+    # Emptied, not deleted: an app the plugin started may hold the folder as its current directory.
+    if (Test-Path $target) { Get-ChildItem $target -Force | Remove-Item -Recurse -Force }
+    else { New-Item -ItemType Directory $target | Out-Null }
+    Copy-Item (Join-Path $folder '*') $target -Recurse
     Start-Process $exe
     Write-Host "installed to $target"
 }

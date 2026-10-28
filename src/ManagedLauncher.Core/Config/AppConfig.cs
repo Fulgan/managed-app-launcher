@@ -209,8 +209,20 @@ public class AppConfig
         Lists[name] = System.Text.Json.JsonSerializer.Deserialize<List<Entry>>(json, ConfigStore.JsonOptions) ?? [];
         Renames.Remove(name);
         if (ListOptions.TryGetValue(ResolveList(source), out var options))
-            ListOptions[name] = new ListOptions { ReturnAfterLaunch = options.ReturnAfterLaunch };
+            ListOptions[name] = options.Clone();
         return name;
+    }
+
+    /// <summary>Changes the named list's options; options left at their defaults are removed.</summary>
+    public void UpdateOptions(string list, Action<ListOptions> change)
+    {
+        list = ResolveList(list);
+        var options = ListOptions.TryGetValue(list, out var current) ? current : new ListOptions();
+        change(options);
+        if (options.IsDefault)
+            ListOptions.Remove(list);
+        else
+            ListOptions[list] = options;
     }
 
     /// <summary>Options of the named list (old names resolve); defaults when none are set.</summary>

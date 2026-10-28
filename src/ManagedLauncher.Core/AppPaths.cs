@@ -9,6 +9,12 @@ public static class AppPaths
 
     public static string ConfigFile { get; } = Path.Combine(ConfigDirectory, "config.json");
 
+    /// <summary>
+    /// Current directory for the plugin and manager. Apps they start inherit it, and an app running with the install
+    /// folder as its current directory keeps that folder from being replaced on update.
+    /// </summary>
+    public static string WorkingDirectory { get; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
     /// <summary>Decks the plugin has seen; written by the plugin, read by the manager.</summary>
     public static string DevicesFile { get; } = Path.Combine(ConfigDirectory, "devices.json");
 

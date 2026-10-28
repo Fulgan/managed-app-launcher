@@ -8,7 +8,7 @@ namespace ManagedLauncher.Core.Press;
 /// <param name="Running">Processes counted as the app when the press was decided.</param>
 public sealed record PressOutcome(PressDecision Decision, OperationResult Result, int Running)
 {
-    public bool Launched => Result.Success && Decision is PressDecision.Launch or PressDecision.LaunchAdmin or PressDecision.Relaunch or PressDecision.FocusOrRelaunch;
+    public bool Launched => Result.Launched;
 }
 
 /// <summary>

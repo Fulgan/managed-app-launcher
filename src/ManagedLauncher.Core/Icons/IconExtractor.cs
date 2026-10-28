@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using ManagedLauncher.Core.Targets;
 
 namespace ManagedLauncher.Core.Icons;
 
@@ -25,6 +26,10 @@ public static class IconExtractor
     /// </summary>
     public static Bitmap? ExtractBest(string source)
     {
+        if (source.StartsWith(TargetResolver.AppsFolderPrefix, StringComparison.OrdinalIgnoreCase)
+            && PackageLogo.Load(source[TargetResolver.AppsFolderPrefix.Length..]) is { } logo)
+            return logo;
+
         Bitmap? best = null;
         var bestContent = 0;
         foreach (var size in CandidateSizes)
@@ -59,7 +64,7 @@ public static class IconExtractor
             return null;
 
         var iid = typeof(IShellItemImageFactory).GUID;
-        if (SHCreateItemFromParsingName(source, IntPtr.Zero, ref iid, out var obj) != 0 || obj is not IShellItemImageFactory factory)
+        if (SHCreateItemFromParsingName(ShellParsingName(source), IntPtr.Zero, ref iid, out var obj) != 0 || obj is not IShellItemImageFactory factory)
             return null;
 
         try
@@ -81,16 +86,20 @@ public static class IconExtractor
         }
     }
 
+    /// <summary>The shell rejects forward slashes that the file system accepts; rooted paths are normalized.</summary>
+    private static string ShellParsingName(string source) =>
+        Path.IsPathRooted(source) ? Path.GetFullPath(source) : source;
+
     /// <summary>
     /// A custom icon: <c>file,index</c> names the index-th icon of an exe, dll or .ico (a negative index is a resource
-    /// id); a .ico without index means its first icon; any other file is an image (png, jpg, bmp…).
+    /// id); a .ico without index means its first icon; an image file is drawn as is; anything else gets its shell icon.
     /// </summary>
     public static Bitmap? LoadCustomIcon(string icon)
     {
         var (file, index) = ParseIconRef(icon);
-        if (index is null && !Path.GetExtension(file).Equals(".ico", StringComparison.OrdinalIgnoreCase))
-            return LoadImageFile(file);
-        return ExtractIndexed(file, index ?? 0);
+        if (index is not null || Path.GetExtension(file).Equals(".ico", StringComparison.OrdinalIgnoreCase))
+            return ExtractIndexed(file, index ?? 0);
+        return IconCatalog.IsImageFile(file) ? LoadImageFile(file) : ExtractBest(file);
     }
 
     public static (string File, int? Index) ParseIconRef(string icon)

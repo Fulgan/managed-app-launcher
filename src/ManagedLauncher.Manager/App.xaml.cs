@@ -20,6 +20,7 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        System.IO.Directory.SetCurrentDirectory(AppPaths.WorkingDirectory);
         singleInstance = new Mutex(true, @"Local\com.fulgan.managedapplauncher.manager", out var first);
         if (!first)
         {

@@ -35,13 +35,15 @@
     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="10,0,0,0">
         <Button x:Name="AppButton" Content="App" Click="App_Click" />
+        <Button x:Name="StockButton" Content="Stock" Click="Stock_Click" Visibility="Collapsed" />
+        <Button x:Name="AppsButton" Content="Apps" Click="Apps_Click" Visibility="Collapsed" />
         <Button Content="Windows" Click="Windows_Click" />
         <Button Content="Browse…" Click="Browse_Click" Margin="0" />
       </StackPanel>
       <TextBlock x:Name="SourceText" Style="{StaticResource Footnote}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
     </DockPanel>
     <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
-      <Button Content="Use app icon" Click="Reset_Click" Style="{StaticResource Plain}" />
+      <Button x:Name="ResetButton" Content="Use app icon" Click="Reset_Click" Style="{StaticResource Plain}" />
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
         <Button Content="Cancel" IsCancel="True" Style="{StaticResource Plain}" />
         <Button Content="Use icon" IsDefault="True" Click="Use_Click" Style="{StaticResource Filled}" Padding="22,6" Margin="0" />
@@ -58,7 +60,7 @@
           </ListBox.ItemsPanel>
           <ListBox.ItemTemplate>
             <DataTemplate>
-              <Image Source="{Binding Image}" Width="56" Height="56" />
+              <Image Source="{Binding Image}" Width="56" Height="56" ToolTip="{Binding Name}" />
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>

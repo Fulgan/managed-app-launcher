@@ -21,9 +21,24 @@ public static class KeyRenderer
 
     /// <summary>Largest side of the icon's visible content; leaves a margin so the indicator never covers much of it.</summary>
     public const int IconSize = 124;
+
+    /// <summary>Side of an icon that is a filled square tile, which reads larger than a shaped icon; same as the control-key tile.</summary>
+    public const int TileIconSize = 116;
+
+    /// <summary>Opaque share of its visible area from which an icon counts as a filled tile.</summary>
+    private const double TileFill = 0.85;
+
+    /// <summary>Largest width/height difference, as a share of the longer side, for a shape to count as square.</summary>
+    private const double SquareTolerance = 0.1;
     private const int BorderWidth = 8;
     private const int DotDiameter = 24;
     private const int DotMargin = 8;
+    /// <summary>Content filling at least this share of its image is padded by design, not by an oversized frame.</summary>
+    private const double DesignedPaddingFill = 0.6;
+
+    private const int OpenIconFrame = 88;
+    private const int OpenIconCenterY = 52;
+
     /// <summary>Pixels below this alpha are shadow or frame, not icon content.</summary>
     private const byte VisibleAlpha = 128;
 
@@ -45,7 +60,7 @@ public static class KeyRenderer
         g.Clear(Color.Black);
 
         if (icon is not null)
-            DrawIcon(g, icon);
+            DrawIcon(g, icon, new PointF(Size / 2f, Size / 2f), Size);
         else
             DrawPlaceholder(g, Centered(IconSize * 3 / 4, IconSize * 3 / 4));
 
@@ -62,18 +77,58 @@ public static class KeyRenderer
     }
 
     /// <summary>
-    /// Shell icons often sit in a larger transparent frame (a 32 px icon padded to 256). Drawing only the visible
-    /// part, scaled to <see cref="IconSize"/>, makes every app fill its key the same way.
+    /// Shell icons often sit in a larger transparent frame (a 32 px icon padded to 256): only the visible part is
+    /// drawn, scaled to <see cref="IconSize"/>. An image whose content already fills most of it keeps the padding
+    /// its designer gave it, the whole image spanning the key, with the content never larger than <see cref="IconSize"/>.
     /// </summary>
-    private static void DrawIcon(Graphics g, Image icon)
+    private static void DrawIcon(Graphics g, Image icon, PointF center, int frame)
     {
-        var source = icon is Bitmap bitmap ? ContentBounds(bitmap) : new Rectangle(Point.Empty, icon.Size);
-        var scale = (float)IconSize / Math.Max(source.Width, source.Height);
+        var bitmap = icon as Bitmap;
+        var source = bitmap is null ? new Rectangle(Point.Empty, icon.Size) : ContentBounds(bitmap);
+        var content = Math.Max(source.Width, source.Height);
+        var canvas = Math.Max(icon.Width, icon.Height);
+        var target = (float)(bitmap is not null && IsSquareTile(bitmap, source) ? TileIconSize : IconSize) * frame / Size;
+        var scale = target / content;
+        if (content >= canvas * DesignedPaddingFill)
+            scale = Math.Min(scale, (float)frame / canvas);
         var width = (int)Math.Round(source.Width * scale);
         var height = (int)Math.Round(source.Height * scale);
+        var area = new Rectangle((int)Math.Round(center.X - width / 2f), (int)Math.Round(center.Y - height / 2f), width, height);
         using var attributes = new ImageAttributes();
         attributes.SetWrapMode(WrapMode.TileFlipXY);
-        g.DrawImage(icon, Centered(width, height), source.X, source.Y, source.Width, source.Height, GraphicsUnit.Pixel, attributes);
+        g.DrawImage(icon, area, source.X, source.Y, source.Width, source.Height, GraphicsUnit.Pixel, attributes);
+    }
+
+    /// <summary>A filled, nearly square shape: it looks larger than a round or open icon of the same width.</summary>
+    internal static bool IsSquareTile(Bitmap bitmap, Rectangle bounds) =>
+        Math.Abs(bounds.Width - bounds.Height) <= Math.Max(bounds.Width, bounds.Height) * SquareTolerance
+        && OpaqueShare(bitmap, bounds) >= TileFill;
+
+    /// <summary>Share of pixels inside <paramref name="bounds"/> that are visible content.</summary>
+    internal static double OpaqueShare(Bitmap bitmap, Rectangle bounds)
+    {
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+            return 0;
+        if (!Image.IsAlphaPixelFormat(bitmap.PixelFormat))
+            return 1;
+        var data = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var row = new byte[data.Width * 4];
+            long opaque = 0;
+            for (var y = bounds.Top; y < bounds.Bottom; y++)
+            {
+                Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
+                for (var x = bounds.Left; x < bounds.Right; x++)
+                    if (row[x * 4 + 3] >= VisibleAlpha)
+                        opaque++;
+            }
+            return opaque / ((double)bounds.Width * bounds.Height);
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
     }
 
     internal static Rectangle ContentBounds(Bitmap bitmap)
@@ -128,6 +183,25 @@ public static class KeyRenderer
 
     /// <summary>Open Launcher key labelled with its list.</summary>
     public static byte[] RenderOpenPng(string list) => Png(IconArt.OpenKey(list));
+
+    public static byte[] RenderOpenPng(string list, Glyph glyph) => Png(IconArt.OpenKey(list, glyph));
+
+    public static byte[] RenderOpenPng(string list, Image? icon)
+    {
+        if (icon is null)
+            return RenderOpenPng(list);
+        var canvas = new Bitmap(Size, Size, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(canvas))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.Clear(Color.Black);
+            DrawIcon(g, icon, new PointF(Size / 2f, OpenIconCenterY), OpenIconFrame);
+            IconArt.DrawListLabel(g, list);
+        }
+        return Png(canvas);
+    }
 
     /// <summary>Manage key: a gear, opening the manager window.</summary>
     public static byte[] RenderManagePng() => Png(IconArt.ControlKey(Glyph.Gear));

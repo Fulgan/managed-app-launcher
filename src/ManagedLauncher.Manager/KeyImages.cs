@@ -23,6 +23,16 @@ public static class KeyImages
         return ToImage(png);
     }
 
+    public static ImageSource RenderOpen(string list, string? icon)
+    {
+        if (icon is null)
+            return ToImage(KeyRenderer.Png(IconArt.OpenKey(null)));
+        if (StockIcons.Parse(icon) is { } glyph)
+            return ToImage(KeyRenderer.RenderOpenPng(list, glyph));
+        using var image = IconExtractor.LoadCustomIcon(TargetResolver.Expand(icon));
+        return ToImage(KeyRenderer.RenderOpenPng(list, image));
+    }
+
     public static ImageSource ToImage(byte[] png)
     {
         var image = new BitmapImage();
