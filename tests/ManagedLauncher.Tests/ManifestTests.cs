@@ -29,6 +29,55 @@ public class ManifestTests
     }
 
     [Fact]
+    public void ManifestMeetsMarketplaceFloor()
+    {
+        var manifest = Manifest();
+
+        Assert.Equal(3, manifest.GetProperty("SDKVersion").GetInt32());
+        Assert.True(Version.Parse(manifest.GetProperty("Software").GetProperty("MinimumVersion").GetString()!) >= new Version(6, 9));
+    }
+
+    [Fact]
+    public void NoShippedCodeReadsThePluginManifest()
+    {
+        var sources = Directory.EnumerateFiles(RepoFile("src"), "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"));
+
+        foreach (var file in sources)
+            Assert.DoesNotContain("BaseDirectory, \"manifest.json\"", File.ReadAllText(file));
+    }
+
+    [Theory]
+    [InlineData("plugin", 256)]
+    [InlineData("category", 28)]
+    [InlineData("action-open", 20)]
+    [InlineData("action-manage", 20)]
+    [InlineData("action-slot", 20)]
+    [InlineData("action-launch", 20)]
+    [InlineData("key-open", 72)]
+    [InlineData("key-manage", 72)]
+    [InlineData("key-slot", 72)]
+    [InlineData("key-launch", 72)]
+    public void ShippedImagesHaveMarketplaceSizes(string name, int size)
+    {
+        using var normal = new System.Drawing.Bitmap(RepoFile("plugin", "imgs", name + ".png"));
+        using var high = new System.Drawing.Bitmap(RepoFile("plugin", "imgs", name + "@2x.png"));
+
+        Assert.Equal(new System.Drawing.Size(size, size), normal.Size);
+        Assert.Equal(new System.Drawing.Size(2 * size, 2 * size), high.Size);
+    }
+
+    [Theory]
+    [InlineData("app-icon.png", 288, 288)]
+    [InlineData("thumbnail.png", 1920, 960)]
+    public void ListingArtHasMarketplaceSizes(string file, int width, int height)
+    {
+        using var image = new System.Drawing.Bitmap(RepoFile("marketplace", file));
+
+        Assert.Equal(new System.Drawing.Size(width, height), image.Size);
+    }
+
+    [Fact]
     public void ManifestDeclaresIdsUsedByCode()
     {
         var manifest = Manifest();
