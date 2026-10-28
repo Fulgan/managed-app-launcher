@@ -5,9 +5,14 @@
 
 .PARAMETER Install
   Also copies the plugin into the Stream Deck plugins folder, restarting the Stream Deck application.
+
+.PARAMETER Uninstall
+  Builds nothing: removes the installed plugin and its Explorer verb, restarting the Stream Deck application.
+  Settings in %APPDATA%\ManagedAppLauncher are kept.
 #>
 param(
     [switch]$Install,
+    [switch]$Uninstall,
     [string]$Configuration = "Release"
 )
 
@@ -17,6 +22,39 @@ $pluginId = "com.fulgan.managedapplauncher"
 $dist = Join-Path $root "dist"
 $folder = Join-Path $dist "$pluginId.sdPlugin"
 $package = Join-Path $dist "$pluginId.streamDeckPlugin"
+$plugins = Join-Path $env:APPDATA "Elgato\StreamDeck\Plugins"
+$target = Join-Path $plugins "$pluginId.sdPlugin"
+$streamDeck = "C:\Program Files\Elgato\StreamDeck\StreamDeck.exe"
+
+function Stop-StreamDeck {
+    # The manager saves each edit as it is made, so a close request loses nothing; killed if it does not exit.
+    foreach ($manager in Get-Process ManagedLauncher.Manager -ErrorAction SilentlyContinue) {
+        $manager.CloseMainWindow() | Out-Null
+        if (-not $manager.WaitForExit(5000)) { $manager.Kill() }
+    }
+    Get-Process StreamDeck -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process malaunch-plugin, applauncher-plugin -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 2
+}
+
+if ($Install -and $Uninstall) { throw "-Install and -Uninstall exclude each other" }
+
+if ($Uninstall) {
+    # The verb points at malaunch.exe inside the plugin folder, so it goes while that exe still exists.
+    $cli = Join-Path $target "malaunch.exe"
+    if (Test-Path $cli) { & $cli shell uninstall }
+    Stop-StreamDeck
+    try {
+        foreach ($path in $target, (Join-Path $plugins "com.fulgan.applauncher.sdPlugin")) {
+            if (Test-Path $path) { Remove-Item $path -Recurse -Force; Write-Host "removed $path" }
+        }
+    }
+    finally {
+        Start-Process $streamDeck
+    }
+    Write-Host "uninstalled; settings kept in $env:APPDATA\ManagedAppLauncher"
+    return
+}
 
 if (Test-Path $folder) { Remove-Item $folder -Recurse -Force }
 New-Item -ItemType Directory -Force $folder | Out-Null
@@ -44,19 +82,14 @@ Move-Item "$package.zip" $package
 Write-Host "built $package"
 
 if ($Install) {
-    $plugins = Join-Path $env:APPDATA "Elgato\StreamDeck\Plugins"
-    $exe = "C:\Program Files\Elgato\StreamDeck\StreamDeck.exe"
-    Get-Process StreamDeck -ErrorAction SilentlyContinue | Stop-Process -Force
-    Get-Process malaunch-plugin, applauncher-plugin -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Seconds 2
+    Stop-StreamDeck
     # Removes an install under the former id com.fulgan.applauncher, which Stream Deck would load beside this one.
     $legacy = Join-Path $plugins "com.fulgan.applauncher.sdPlugin"
     if (Test-Path $legacy) { Remove-Item $legacy -Recurse -Force }
-    $target = Join-Path $plugins "$pluginId.sdPlugin"
     # Emptied, not deleted: an app the plugin started may hold the folder as its current directory.
     if (Test-Path $target) { Get-ChildItem $target -Force | Remove-Item -Recurse -Force }
     else { New-Item -ItemType Directory $target | Out-Null }
     Copy-Item (Join-Path $folder '*') $target -Recurse
-    Start-Process $exe
+    Start-Process $streamDeck
     Write-Host "installed to $target"
 }
