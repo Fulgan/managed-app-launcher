@@ -24,7 +24,7 @@ Stream Deck plugin for Windows that launches applications from managed lists. In
 | Component | Requirement |
 |---|---|
 | Windows | 10 or later |
-| Stream Deck software | 6.4 or later |
+| Stream Deck software | 6.9 or later |
 | Devices | Stream Deck, Stream Deck XL, Stream Deck Mini, Stream Deck +, Stream Deck Neo |
 
 ## Installation

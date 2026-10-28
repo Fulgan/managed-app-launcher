@@ -254,7 +254,9 @@ internal static class Program
         var (columns, rows) = ParseSize(cl.Get("size") ?? "5x3");
         var model = cl.Get("device") ?? "20GBA9901";
         var name = cl.Get("name") ?? "Managed App Launcher";
-        var version = InstalledPluginVersion() ?? typeof(Program).Assembly.GetName().Version!.ToString();
+        // Stream Deck treats a profile action whose plugin version differs from the installed one as a missing
+        // plugin. The assembly version equals the manifest Version; the manifest itself is not read at runtime.
+        var version = typeof(Program).Assembly.GetName().Version!.ToString();
         File.WriteAllBytes(output, SlotPageBuilder.Build(name, model, null, columns, rows, version));
         Console.WriteLine($"wrote {output} ({columns}x{rows}, {model})");
         return 0;
@@ -306,19 +308,6 @@ internal static class Program
             default:
                 throw new UsageException("shell install|uninstall");
         }
-    }
-
-    /// <summary>
-    /// Stream Deck treats a profile action whose plugin version differs from the installed one as a missing plugin,
-    /// so the version comes from the manifest shipped next to this exe when there is one.
-    /// </summary>
-    private static string? InstalledPluginVersion()
-    {
-        var manifest = Path.Combine(AppContext.BaseDirectory, "manifest.json");
-        if (!File.Exists(manifest))
-            return null;
-        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifest));
-        return doc.RootElement.TryGetProperty("Version", out var v) ? v.GetString() : null;
     }
 
     private static int Index(string s) =>
