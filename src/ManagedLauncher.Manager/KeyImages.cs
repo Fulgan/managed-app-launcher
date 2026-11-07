@@ -23,14 +23,28 @@ public static class KeyImages
         return ToImage(png);
     }
 
-    public static ImageSource RenderOpen(string list, string? icon)
+    /// <summary>An Open Launcher key for the list: its icon, else the launcher glyph (labelled only when the theme paints it).</summary>
+    public static ImageSource RenderOpen(string list, string? icon, KeyTheme theme)
     {
         if (icon is null)
-            return ToImage(KeyRenderer.Png(IconArt.OpenKey(null)));
+            return ToImage(KeyRenderer.Png(IconArt.OpenKey(theme == KeyTheme.Grey ? null : list, theme: theme)));
         if (StockIcons.Parse(icon) is { } glyph)
-            return ToImage(KeyRenderer.RenderOpenPng(list, glyph));
+            return ToImage(KeyRenderer.RenderOpenPng(list, glyph, theme: theme));
         using var image = IconExtractor.LoadCustomIcon(TargetResolver.Expand(icon));
         return ToImage(KeyRenderer.RenderOpenPng(list, image));
+    }
+
+    /// <summary>The key of a folder or link item: the list's icon (folder glyph by default), the link badge for a link.</summary>
+    public static ImageSource RenderFolder(string name, string? icon, bool link, bool broken, KeyTheme theme)
+    {
+        if (broken)
+            return ToImage(KeyRenderer.RenderOpenPng(name, Glyph.Question, link, theme));
+        if (icon is null || StockIcons.Parse(icon) is { } _)
+            return ToImage(KeyRenderer.RenderOpenPng(name, StockIcons.Parse(icon) ?? Glyph.Folder, link, theme));
+        using var image = IconExtractor.LoadCustomIcon(TargetResolver.Expand(icon));
+        return image is null
+            ? ToImage(KeyRenderer.RenderOpenPng(name, Glyph.Folder, link, theme))
+            : ToImage(KeyRenderer.RenderOpenPng(name, image, link));
     }
 
     public static ImageSource ToImage(byte[] png)

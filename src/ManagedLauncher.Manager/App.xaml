@@ -370,18 +370,66 @@
           <ControlTemplate TargetType="MenuItem">
             <Border x:Name="b" Background="Transparent" CornerRadius="8" Padding="12,8">
               <StackPanel Orientation="Horizontal">
+                <TextBlock x:Name="check" Text="&#xE73E;" FontFamily="{StaticResource Glyphs}" FontSize="12" Width="22"
+                           VerticalAlignment="Center" Visibility="Collapsed" />
                 <ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
                 <TextBlock Text="{TemplateBinding InputGestureText}" Foreground="{StaticResource Muted}" Margin="16,0,0,0" />
               </StackPanel>
             </Border>
             <ControlTemplate.Triggers>
+              <Trigger Property="IsCheckable" Value="True">
+                <Setter TargetName="check" Property="Visibility" Value="Hidden" />
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="check" Property="Visibility" Value="Visible" />
+              </Trigger>
               <Trigger Property="IsHighlighted" Value="True">
                 <Setter TargetName="b" Property="Background" Value="{StaticResource Pressed}" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="b" Property="Opacity" Value="0.4" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
+      <Style.Triggers>
+        <!-- An item with child items opens them in a menu to its right. -->
+        <Trigger Property="Role" Value="SubmenuHeader">
+          <Setter Property="Template">
+            <Setter.Value>
+              <ControlTemplate TargetType="MenuItem">
+                <Grid>
+                  <Border x:Name="b" Background="Transparent" CornerRadius="8" Padding="12,8">
+                    <DockPanel>
+                      <TextBlock DockPanel.Dock="Right" Text="&#xE76C;" FontFamily="{StaticResource Glyphs}" FontSize="10"
+                                 Foreground="{StaticResource Muted}" Margin="16,0,0,0" VerticalAlignment="Center" />
+                      <ContentPresenter ContentSource="Header" VerticalAlignment="Center" />
+                    </DockPanel>
+                  </Border>
+                  <Popup x:Name="PART_Popup" Placement="Right" HorizontalOffset="4" VerticalOffset="-7" AllowsTransparency="True"
+                         Focusable="False" PopupAnimation="None" IsOpen="{TemplateBinding IsSubmenuOpen}">
+                    <Border Background="{StaticResource Field}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="12"
+                            Padding="6" MinWidth="200">
+                      <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="480">
+                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+                      </ScrollViewer>
+                    </Border>
+                  </Popup>
+                </Grid>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsHighlighted" Value="True">
+                    <Setter TargetName="b" Property="Background" Value="{StaticResource Pressed}" />
+                  </Trigger>
+                  <Trigger Property="IsEnabled" Value="False">
+                    <Setter TargetName="b" Property="Opacity" Value="0.4" />
+                  </Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate>
+            </Setter.Value>
+          </Setter>
+        </Trigger>
+      </Style.Triggers>
     </Style>
 
     <!-- iOS-style on/off switch; the content is the label on its right. -->

@@ -60,6 +60,27 @@ input:focus, select:focus {
   cursor: pointer;
 }
 
+.row.top {
+  align-items: start;
+}
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.checks label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.checks input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
 [hidden] {
   display: none !important;
 }

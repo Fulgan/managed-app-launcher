@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <script>window.connectElgatoStreamDeckSocket = (...args) => { window.earlyConnect = args; };</script>
+  <title>Auto List</title>
+  <link rel="stylesheet" href="pi.css">
+</head>
+<body>
+  <div class="row">
+    <label for="source">Source</label>
+    <select id="source" data-key="source">
+      <option value="steam">Steam games</option>
+      <option value="startMenu">Start menu</option>
+      <option value="running">Running programs</option>
+      <option value="directory">Directory</option>
+    </select>
+  </div>
+  <div class="row" id="pathRow" hidden>
+    <label for="path">Directory</label>
+    <input id="path" data-key="path" type="text" placeholder="C:\Tools">
+  </div>
+  <div class="row top" id="typesRow" hidden>
+    <label>File types</label>
+    <div id="types" class="checks">
+      <label><input type="checkbox" value="exe"> programs (.exe)</label>
+      <label><input type="checkbox" value="lnk"> shortcuts (.lnk)</label>
+      <label><input type="checkbox" value="symlink"> symbolic links</label>
+      <label><input type="checkbox" value="bat"> scripts (.bat, .cmd, .ps1)</label>
+    </div>
+    <input id="typesValue" data-key="types" type="hidden">
+  </div>
+  <div class="row">
+    <label for="backEveryPage">Back key</label>
+    <select id="backEveryPage" data-key="backEveryPage">
+      <option value="true">on every page</option>
+      <option value="false">on the first page only</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="navigation">Page keys</label>
+    <select id="navigation" data-key="navigation">
+      <option value="arrows">previous &amp; next arrows</option>
+      <option value="carousel">carousel</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="color">Key color</label>
+    <select id="color" data-key="color">
+      <option value="grey">grey</option>
+      <option value="blue">blue</option>
+      <option value="red">red</option>
+    </select>
+  </div>
+  <div class="info" id="info"></div>
+
+  <script src="pi.js"></script>
+  <script>
+    const source = document.getElementById("source");
+    const typesValue = document.getElementById("typesValue");
+    const boxes = Array.from(document.querySelectorAll("#types input"));
+
+    // The directory fields show only for a directory source; no type ticked means all types.
+    function showSource() {
+      const directory = source.value === "directory";
+      document.getElementById("pathRow").hidden = !directory;
+      document.getElementById("typesRow").hidden = !directory;
+      const types = (typesValue.value || "").split(",").filter((t) => t);
+      for (const box of boxes) box.checked = types.length === 0 || types.includes(box.value);
+    }
+
+    for (const box of boxes) {
+      box.addEventListener("change", () => {
+        const ticked = boxes.filter((b) => b.checked).map((b) => b.value);
+        if (ticked.length === 0) {
+          box.checked = true;
+          return;
+        }
+        typesValue.value = ticked.length === boxes.length ? "" : ticked.join(",");
+        saveSettings();
+      });
+    }
+    source.addEventListener("change", showSource);
+    onInfo = (info) => {
+      if (!settings.source) {
+        source.value = "steam";
+        saveSettings();
+      }
+      showSource();
+      if (!settings.backEveryPage) document.getElementById("backEveryPage").value = "true";
+      if (!settings.navigation) document.getElementById("navigation").value = "arrows";
+      if (!settings.color) document.getElementById("color").value = "grey";
+      document.getElementById("info").innerHTML = info.error
+        ? `<span class="error">${escapeHtml(info.error)}</span>`
+        : `${info.apps} items`;
+    };
+  </script>
+</body>
+</html>

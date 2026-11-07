@@ -190,6 +190,18 @@ public class PressTests
     }
 
     [Fact]
+    public void PowerShellScriptRunsThroughPowerShellInItsDirectory()
+    {
+        var script = new ResolvedTarget(TargetKind.Exe, @"C:\tools\clean.ps1", null, null, null, null, null, null, null);
+
+        var info = Win32AppOperations.BuildStartInfo(script, Options() with { Args = "-Force" }, elevated: false);
+
+        Assert.Equal(Win32AppOperations.WindowsPowerShell, info.FileName);
+        Assert.Equal(@"-NoProfile -File ""C:\tools\clean.ps1"" -Force", info.Arguments);
+        Assert.Equal(@"C:\tools", info.WorkingDirectory);
+    }
+
+    [Fact]
     public void ExeStartsInItsOwnDirectoryByDefault()
     {
         var info = Win32AppOperations.BuildStartInfo(Exe, Options(), elevated: false);

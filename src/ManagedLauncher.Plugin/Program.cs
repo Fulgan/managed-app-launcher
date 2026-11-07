@@ -66,6 +66,7 @@ internal static class Program
         controller.OpenManager = manager.Open;
         controller.ListApps = source => sta.RunAsync(() => AppCatalog.List(source));
         controller.ListIcons = file => sta.RunAsync(() => IconCatalog.List(file, PickerIconSize));
+        controller.RunGeneration = work => sta.RunAsync(work);
 
         watcher.Changed += config =>
         {
@@ -81,6 +82,7 @@ internal static class Program
             await deck.ConnectAsync(CancellationToken.None);
             watcher.Start();
             tracker.Start();
+            _ = RefreshRunningFoldersAsync(controller, () => watcher.Current.PollMs, log.Write);
             await deck.RunAsync(controller.HandleAsync, ex => log.Write($"event failed: {ex}"), CancellationToken.None);
         }
         catch (Exception ex)
@@ -91,5 +93,22 @@ internal static class Program
 
         log.Write("stopped");
         return 0;
+    }
+
+    /// <summary>Keeps shown "running programs" auto-folders current, at the poll interval, for the plugin's lifetime.</summary>
+    private static async Task RefreshRunningFoldersAsync(KeyController controller, Func<int> pollMs, Action<string> log)
+    {
+        while (true)
+        {
+            await Task.Delay(Math.Max(250, pollMs()));
+            try
+            {
+                await controller.RefreshRunningFoldersAsync();
+            }
+            catch (Exception ex)
+            {
+                log($"running folder refresh failed: {ex.Message}");
+            }
+        }
     }
 }

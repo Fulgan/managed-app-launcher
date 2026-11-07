@@ -3,7 +3,7 @@ using System.Drawing.Drawing2D;
 
 namespace ManagedLauncher.Core.Icons;
 
-public enum Glyph { Launcher, Return, Next, Gear, Play, Plus, Slot, Question, Folder, Star, Home, Games, Media, Music, Work, Code, Tools, Web, Chat, Graphics }
+public enum Glyph { Launcher, Return, Next, Gear, Play, Plus, Slot, Question, Folder, Star, Home, Games, Media, Music, Work, Code, Tools, Web, Chat, Graphics, Up, Link, Previous, List }
 
 /// <summary>
 /// The one drawing vocabulary for every icon the plugin and the manager ship or render: the brand tile (blue
@@ -83,13 +83,28 @@ public static class IconArt
         }
     }
 
-    /// <summary>The dark tile behind every control key (back, next page, manage, placeholders).</summary>
-    public static void DrawControlTile(Graphics g, RectangleF box, bool placeholder = false)
+    /// <summary>Top and bottom of the tile gradient per theme.</summary>
+    public static (Color Top, Color Bottom) TileColors(Config.KeyTheme theme) => theme switch
+    {
+        Config.KeyTheme.Blue => (Color.FromArgb(0x3D, 0x8B, 0xF5), Color.FromArgb(0x0B, 0x4F, 0xB8)),
+        Config.KeyTheme.Red => (Color.FromArgb(0xF2, 0x5A, 0x4E), Color.FromArgb(0xA8, 0x22, 0x1A)),
+        _ => (TileTop, TileBottom),
+    };
+
+    /// <summary>Labels and page numbers on a tile: grey on the grey tile, translucent white on coloured ones.</summary>
+    private static Color Secondary(Config.KeyTheme theme) => theme == Config.KeyTheme.Grey ? Muted : Color.FromArgb(0xD0, 0xFF, 0xFF, 0xFF);
+
+    /// <summary>Page dots other than the current one.</summary>
+    private static Color Dim(Config.KeyTheme theme) => theme == Config.KeyTheme.Grey ? Faint : Color.FromArgb(0x70, 0xFF, 0xFF, 0xFF);
+
+    /// <summary>The tile behind every control key (back, next page, manage, folders), in the theme's colour; placeholders stay dark.</summary>
+    public static void DrawControlTile(Graphics g, RectangleF box, bool placeholder = false, Config.KeyTheme theme = Config.KeyTheme.Grey)
     {
         using var path = RoundRect(box, box.Width * TileCorner);
         if (!placeholder)
         {
-            using var gradient = new LinearGradientBrush(new PointF(0, box.Top), new PointF(0, box.Bottom), TileTop, TileBottom);
+            var (top, bottom) = TileColors(theme);
+            using var gradient = new LinearGradientBrush(new PointF(0, box.Top), new PointF(0, box.Bottom), top, bottom);
             g.FillPath(gradient, path);
             return;
         }
@@ -110,18 +125,30 @@ public static class IconArt
         switch (glyph)
         {
             case Glyph.Return:
-                using (var arrow = new GraphicsPath())
-                {
-                    var r = 0.22f * s;
-                    arrow.AddLine(P(0.2f, 0.36f), P(0.58f, 0.36f));
-                    arrow.AddArc(box.X + 0.58f * s - r, box.Y + 0.36f * s, 2 * r, 2 * r, 270, 180);
-                    arrow.AddLine(P(0.58f, 0.36f + 0.44f), P(0.36f, 0.8f));
-                    g.DrawPath(pen, arrow);
-                }
-                g.DrawLines(pen, [P(0.36f, 0.2f), P(0.2f, 0.36f), P(0.36f, 0.52f)]);
+                g.DrawLines(pen, [P(0.16f, 0.8f), P(0.64f, 0.8f), P(0.64f, 0.2f)]);
+                g.DrawLines(pen, [P(0.4f, 0.44f), P(0.64f, 0.2f), P(0.88f, 0.44f)]);
                 break;
             case Glyph.Next:
                 g.DrawLines(pen, [P(0.38f, 0.18f), P(0.66f, 0.5f), P(0.38f, 0.82f)]);
+                break;
+            case Glyph.List:
+                foreach (var y in new[] { 0.22f, 0.5f, 0.78f })
+                {
+                    var dot = 0.13f * s;
+                    g.FillEllipse(brush, box.X + 0.2f * s - dot / 2, box.Y + y * s - dot / 2, dot, dot);
+                    g.DrawLine(pen, P(0.4f, y), P(0.82f, y));
+                }
+                break;
+            case Glyph.Previous:
+                g.DrawLines(pen, [P(0.62f, 0.18f), P(0.34f, 0.5f), P(0.62f, 0.82f)]);
+                break;
+            case Glyph.Up:
+                g.DrawLine(pen, P(0.5f, 0.8f), P(0.5f, 0.22f));
+                g.DrawLines(pen, [P(0.26f, 0.44f), P(0.5f, 0.2f), P(0.74f, 0.44f)]);
+                break;
+            case Glyph.Link:
+                g.DrawLine(pen, P(0.28f, 0.72f), P(0.7f, 0.3f));
+                g.DrawLines(pen, [P(0.4f, 0.3f), P(0.7f, 0.3f), P(0.7f, 0.6f)]);
                 break;
             case Glyph.Plus:
                 g.DrawLine(pen, P(0.5f, 0.2f), P(0.5f, 0.8f));
@@ -330,13 +357,13 @@ public static class IconArt
     }
 
     /// <summary>A 144 px control key: tile with a centred glyph.</summary>
-    public static Bitmap ControlKey(Glyph glyph, bool placeholder = false)
+    public static Bitmap ControlKey(Glyph glyph, bool placeholder = false, Config.KeyTheme theme = Config.KeyTheme.Grey)
     {
         const int size = KeyRenderer.Size;
         var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using var g = Prepare(bitmap);
         g.Clear(Color.Black);
-        DrawControlTile(g, KeyTile, placeholder);
+        DrawControlTile(g, KeyTile, placeholder, theme);
         const float glyphSize = 62;
         DrawGlyph(g, glyph, new RectangleF(72 - glyphSize / 2, 72 - glyphSize / 2, glyphSize, glyphSize), placeholder ? Muted : Ink);
         return bitmap;
@@ -347,15 +374,16 @@ public static class IconArt
 
     /// <summary>Next-page key: chevron above a page indicator, dots (current one bright) or "page/pages".</summary>
     /// <param name="page">Zero-based page shown.</param>
-    public static Bitmap NextPageKey(int page, int pages)
+    /// <param name="previous">Left chevron, for the previous-page arrow.</param>
+    public static Bitmap NextPageKey(int page, int pages, bool previous = false, Config.KeyTheme theme = Config.KeyTheme.Grey)
     {
         const int size = KeyRenderer.Size;
         var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using var g = Prepare(bitmap);
         g.Clear(Color.Black);
-        DrawControlTile(g, KeyTile);
+        DrawControlTile(g, KeyTile, theme: theme);
         const float glyphSize = 52, glyphCenterY = 62;
-        DrawGlyph(g, Glyph.Next, new RectangleF(72 - glyphSize / 2, glyphCenterY - glyphSize / 2, glyphSize, glyphSize), Ink);
+        DrawGlyph(g, previous ? Glyph.Previous : Glyph.Next, new RectangleF(72 - glyphSize / 2, glyphCenterY - glyphSize / 2, glyphSize, glyphSize), Ink);
 
         const float rowY = 108;
         if (pages <= MaxPageDots)
@@ -363,13 +391,13 @@ public static class IconArt
             const float dot = 9, gap = 7;
             var left = 72 - (pages * dot + (pages - 1) * gap) / 2;
             using var current = new SolidBrush(Ink);
-            using var other = new SolidBrush(Faint);
+            using var other = new SolidBrush(Dim(theme));
             for (var i = 0; i < pages; i++)
                 g.FillEllipse(i == page ? current : other, left + i * (dot + gap), rowY - dot / 2, dot, dot);
             return bitmap;
         }
         using var font = new Font("Segoe UI Semibold", 17, FontStyle.Regular, GraphicsUnit.Pixel);
-        using var ink = new SolidBrush(Muted);
+        using var ink = new SolidBrush(Secondary(theme));
         using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         g.DrawString($"{page + 1}/{pages}", font, ink, new RectangleF(14, rowY - 12, 116, 24), format);
@@ -381,13 +409,13 @@ public static class IconArt
     /// running dot of the brand mark, and the list name drawn under it. Null <paramref name="list"/> leaves the
     /// grid centred with no label.
     /// </summary>
-    public static Bitmap OpenKey(string? list, Glyph glyph = Glyph.Launcher)
+    public static Bitmap OpenKey(string? list, Glyph glyph = Glyph.Launcher, bool link = false, Config.KeyTheme theme = Config.KeyTheme.Grey)
     {
         const int size = KeyRenderer.Size;
         var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using var g = Prepare(bitmap);
         g.Clear(Color.Black);
-        DrawControlTile(g, KeyTile);
+        DrawControlTile(g, KeyTile, theme: theme);
         var labelled = !string.IsNullOrEmpty(list);
         var glyphSize = labelled ? 52f : 62f;
         var centerY = labelled ? 60f : 72f;
@@ -401,14 +429,28 @@ public static class IconArt
             g.FillEllipse(green, bottomLeft.X + (bottomLeft.Width - dot) / 2, bottomLeft.Y + (bottomLeft.Height - dot) / 2, dot, dot);
         }
         if (labelled)
-            DrawListLabel(g, list!);
+            DrawListLabel(g, list!, theme);
+        if (link)
+            DrawLinkBadge(g);
         return bitmap;
     }
 
-    public static void DrawListLabel(Graphics g, string list)
+    /// <summary>Marks a key as a link: a small control-tile disc in the top-right corner with an outward arrow.</summary>
+    public static void DrawLinkBadge(Graphics g)
+    {
+        var disc = new RectangleF(98, 18, 30, 30);
+        using (var fill = new SolidBrush(TileTop))
+            g.FillEllipse(fill, disc);
+        using (var ring = new Pen(Color.Black, 3))
+            g.DrawEllipse(ring, disc);
+        disc.Inflate(-6, -6);
+        DrawGlyph(g, Glyph.Link, disc, Ink);
+    }
+
+    public static void DrawListLabel(Graphics g, string list, Config.KeyTheme theme = Config.KeyTheme.Grey)
     {
         using var font = new Font("Segoe UI Semibold", 17, FontStyle.Regular, GraphicsUnit.Pixel);
-        using var ink = new SolidBrush(Muted);
+        using var ink = new SolidBrush(Secondary(theme));
         using var format = new StringFormat(StringFormatFlags.NoWrap) { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         g.DrawString(list, font, ink, new RectangleF(22, 96, 100, 24), format);

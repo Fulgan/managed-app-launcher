@@ -283,7 +283,7 @@ public class PluginTests
 
         Assert.EndsWith("tool.exe", FindIcon(h, "k0"));
         var settings = Assert.Single(h.Deck.Calls, c => c.Item1 == "settings").Item3!;
-        Assert.Equal("""{"list":"office","slot":0}""", settings);
+        Assert.Equal($$"""{"list":"{{h.Config.ResolveList("office")}}","slot":0}""", settings);
     }
 
     [Fact]
@@ -454,7 +454,7 @@ public class PluginTests
     {
         using var h = new Harness();
         h.Config.EnsureList("dev").Add(new Entry { Target = h.Tmp.Touch("tool.exe") });
-        h.Config.ListOptions["dev"] = new ListOptions { ReturnAfterLaunch = true };
+        h.Config.UpdateOptions("dev", o => o.ReturnAfterLaunch = true);
         await h.Controller.OpenLauncherAsync(KeyController.Key.From(
             Appear("opener", 0, 0, settings: """{"list":"dev"}""", action: KeyController.OpenAction)));
         await h.HandleAsync(Appear("k1", 1, 0));
@@ -471,7 +471,7 @@ public class PluginTests
         using var h = new Harness();
         for (var i = 0; i < 20; i++)
             h.AddApp($"app{i:00}");
-        h.Config.ListOptions["default"] = new ListOptions { ReturnAfterLaunch = true };
+        h.Config.UpdateOptions(null, o => o.ReturnAfterLaunch = true);
         var nav = KeyController.Key.From(Appear("nav", 4, 2));
         await h.HandleAsync(Appear("nav", 4, 2));
         await h.Controller.TurnPageAsync(nav, +1);
@@ -493,7 +493,7 @@ public class PluginTests
         await h.Controller.ExecuteAsync(KeyController.Key.From(Appear("k1", 1, 0)), isLong: false);
         Assert.DoesNotContain(h.Deck.Calls, c => c == ("switch", Device, null));
 
-        h.Config.ListOptions["default"] = new ListOptions { ReturnAfterLaunch = true };
+        h.Config.UpdateOptions(null, o => o.ReturnAfterLaunch = true);
         h.Source.Processes = [new ProcessInfo(42, exe, null, DateTime.UtcNow.AddMinutes(-1))];
         await h.Controller.ExecuteAsync(KeyController.Key.From(Appear("k1", 1, 0)), isLong: true);
         Assert.DoesNotContain(h.Deck.Calls, c => c == ("switch", Device, null));
@@ -827,6 +827,370 @@ public class PluginTests
         Assert.Equal(2, watcher.Current.LongPressMs);
     }
 
+    private static string AddFolder(Harness h, string parent, string name)
+    {
+        Assert.Null(h.Config.AddFolder(parent, name, out var id, out _));
+        return id;
+    }
+
+    private static async Task PressFolderAsync(Harness h, string context, int column, int row)
+    {
+        var key = KeyController.Key.From(Appear(context, column, row));
+        var item = h.Controller.ItemFor(key);
+        Assert.NotNull(item?.Opens);
+        await h.Controller.OpenFolderAsync(key, item!);
+    }
+
+    [Fact]
+    public async Task FolderKeyOpensFolderWithUpKeyAndUpReturnsToParentPage()
+    {
+        using var h = new Harness();
+        for (var i = 0; i < 16; i++)
+            h.AddApp($"app{i:00}");
+        var tools = AddFolder(h, null!, "Tools");
+        h.Config.Insert(tools, new Entry { Target = h.Tmp.Touch("inside.exe") });
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("k2", 2, 0));
+        await h.Controller.TurnPageAsync(KeyController.Key.From(Appear("nav", 4, 2)), +1);
+        Assert.Equal("folder Tools", FindIcon(h, "k2"));
+
+        await PressFolderAsync(h, "k2", 2, 0);
+
+        Assert.Equal(0, h.Controller.PageOf(Device));
+        Assert.Equal("up", FindIcon(h, "k0"));
+        Assert.EndsWith("inside.exe", FindIcon(h, "k1"));
+        Assert.Equal(tools, h.Controller.ListOf(KeyController.Key.From(Appear("k1", 1, 0))));
+
+        await h.Controller.GoUpAsync(KeyController.Key.From(Appear("k0", 0, 0)));
+
+        Assert.Equal(1, h.Controller.PageOf(Device));
+        Assert.Equal("folder Tools", FindIcon(h, "k2"));
+    }
+
+    [Fact]
+    public async Task LinkKeyOpensTargetAndLoopingLinkAlerts()
+    {
+        using var h = new Harness();
+        var games = h.Config.AddList("Games")!;
+        h.Config.Insert(games, new Entry { Target = h.Tmp.Touch("game.exe") });
+        Assert.Null(h.Config.AddLink(null, games, out _, title: "Play"));
+        h.Config.Insert(games, new Entry { Link = h.Config.HomeList });
+        h.Config.Normalize();
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        Assert.Equal("broken Play", FindIcon(h, "k0"));
+
+        h.Config.EnsureList(games).RemoveAt(1);
+        h.Config.Normalize();
+        await h.Controller.OnConfigChangedAsync();
+        Assert.Equal("link Play", FindIcon(h, "k0"));
+
+        await PressFolderAsync(h, "k0", 0, 0);
+        Assert.Equal("up", FindIcon(h, "k0"));
+        Assert.EndsWith("game.exe", FindIcon(h, "k1"));
+    }
+
+    [Fact]
+    public async Task ReturnAfterLaunchInFolderGoesUpOneLevel()
+    {
+        using var h = new Harness();
+        var tools = AddFolder(h, null!, "Tools");
+        h.Config.Insert(tools, new Entry { Target = h.Tmp.Touch("tool.exe") });
+        h.Config.UpdateOptions(tools, o => o.ReturnAfterLaunch = true);
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        await PressFolderAsync(h, "k0", 0, 0);
+
+        await h.Controller.ExecuteAsync(KeyController.Key.From(Appear("k1", 1, 0)), isLong: false);
+
+        Assert.Equal(1, h.Operations.Launches);
+        Assert.Equal(h.Config.HomeList, h.Controller.ListOf(KeyController.Key.From(Appear("k1", 1, 0))));
+        Assert.DoesNotContain(h.Deck.Calls, c => c.Item1 == "switch");
+    }
+
+    [Fact]
+    public async Task RemovedFolderClosesAndOpenResetsFolders()
+    {
+        using var h = new Harness();
+        var tools = AddFolder(h, null!, "Tools");
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await PressFolderAsync(h, "k0", 0, 0);
+        Assert.Equal("up", FindIcon(h, "k0"));
+
+        h.Config.RemoveList(tools);
+        await h.Controller.OnConfigChangedAsync();
+        Assert.Equal(h.Config.HomeList, h.Controller.ListOf(KeyController.Key.From(Appear("k0", 0, 0))));
+
+        var again = AddFolder(h, null!, "Again");
+        await PressFolderAsync(h, "k0", 0, 0);
+        await h.Controller.OpenLauncherAsync(KeyController.Key.From(Appear("opener", 0, 0, action: KeyController.OpenAction)));
+        Assert.NotEqual(again, h.Controller.ListOf(KeyController.Key.From(Appear("k0", 0, 0))));
+        Assert.Equal("back", FindIcon(h, "k0"));
+    }
+
+    [Fact]
+    public async Task ArrowNavigationStepsWithoutWrappingAndFolderInheritsIt()
+    {
+        using var h = new Harness();
+        for (var i = 0; i < 40; i++)
+            h.AddApp($"app{i:00}");
+        h.Config.UpdateOptions(null, o => o.Navigation = Navigation.Arrows);
+        await h.HandleAsync(Appear("prev", 0, 2));
+        await h.HandleAsync(Appear("next", 4, 2));
+        Assert.EndsWith("app10.exe", FindIcon(h, "prev"));
+        Assert.Equal("next 1/3", FindIcon(h, "next"));
+
+        var next = KeyController.Key.From(Appear("next", 4, 2));
+        await h.Controller.TurnPageAsync(next, +1);
+        Assert.Equal("previous 2/3", FindIcon(h, "prev"));
+        await h.Controller.TurnPageAsync(next, +int.MaxValue / 2);
+        Assert.Equal(2, h.Controller.PageOf(Device));
+        Assert.Equal("manage", FindIcon(h, "next"));
+        await h.Controller.TurnPageAsync(next, +1);
+        Assert.Equal(2, h.Controller.PageOf(Device));
+        await h.Controller.TurnPageAsync(KeyController.Key.From(Appear("prev", 0, 2)), -int.MaxValue / 2);
+        Assert.Equal(0, h.Controller.PageOf(Device));
+
+        var sub = h.Config.CopyList(null);
+        Assert.Equal(Navigation.Arrows, h.Config.NavigationOf(sub));
+        Assert.Null(h.Config.AddFolder(null, "Sub", out var folder, out _));
+        Assert.Equal(Navigation.Arrows, h.Config.NavigationOf(folder));
+        h.Config.UpdateOptions(folder, o => o.Navigation = Navigation.Carousel);
+        Assert.Equal(Navigation.Carousel, h.Config.NavigationOf(folder));
+        Assert.Equal(Navigation.Arrows, h.Config.InheritedNavigationOf(folder));
+    }
+
+    [Fact]
+    public async Task AutoFolderGeneratesOnOpenAndNestedFoldersOpen()
+    {
+        using var h = new Harness();
+        var dir = h.Tmp.MakeDir("src");
+        h.Tmp.Touch("src", "tool.exe");
+        h.Tmp.Touch("src", "Sub", "inner.exe");
+        Assert.Null(h.Config.AddAutoFolder(null, "Tools", new ListSource { Type = SourceType.Directory, Path = dir }, out _, out _));
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("k2", 2, 0));
+        Assert.Equal("folder Tools", FindIcon(h, "k0"));
+
+        await PressFolderAsync(h, "k0", 0, 0);
+
+        Assert.Equal("up", FindIcon(h, "k0"));
+        Assert.Equal("folder Sub", FindIcon(h, "k1"));
+        Assert.EndsWith("tool.exe", FindIcon(h, "k2"));
+
+        await PressFolderAsync(h, "k1", 1, 0);
+        Assert.EndsWith("inner.exe", FindIcon(h, "k1"));
+    }
+
+    [Fact]
+    public async Task RunningAutoFolderFollowsRunningProgramsWhileShown()
+    {
+        using var h = new Harness();
+        var sources = new AutoFolderTests.FakeSources();
+        h.Controller.Sources = sources;
+        sources.RunningApps.Add(new AppChoice("One", "", new PinAdvisor.PinPlan(new Entry { Target = h.Tmp.Touch("one.exe") }, [])));
+        Assert.Null(h.Config.AddAutoFolder(null, "Running", new ListSource { Type = SourceType.Running }, out _, out _));
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("k2", 2, 0));
+        await PressFolderAsync(h, "k0", 0, 0);
+        Assert.EndsWith("one.exe", FindIcon(h, "k1"));
+
+        sources.RunningApps.Insert(0, new AppChoice("A first", "", new PinAdvisor.PinPlan(new Entry { Target = h.Tmp.Touch("a.exe") }, [])));
+        await h.Controller.RefreshRunningFoldersAsync();
+        await h.Controller.IdleAsync();
+
+        Assert.EndsWith("a.exe", FindIcon(h, "k1"));
+        Assert.EndsWith("one.exe", FindIcon(h, "k2"));
+    }
+
+    [Fact]
+    public async Task OpenLauncherKeyOnAutoFolderShowsGeneratedItems()
+    {
+        using var h = new Harness();
+        var dir = h.Tmp.MakeDir("games");
+        h.Tmp.Touch("games", "game.exe");
+        Assert.Null(h.Config.AddAutoFolder(null, "Games", new ListSource { Type = SourceType.Directory, Path = dir }, out var auto, out _));
+        var opener = KeyController.Key.From(Appear("opener", 0, 0, settings: $$"""{"list":"{{auto}}"}""", action: KeyController.OpenAction));
+
+        await h.Controller.OpenLauncherAsync(opener);
+        await h.HandleAsync(Appear("back", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+
+        Assert.Equal("back", FindIcon(h, "back"));
+        Assert.EndsWith("game.exe", FindIcon(h, "k1"));
+
+        h.Tmp.Touch("games", "another.exe");
+        await h.Controller.OpenLauncherAsync(opener);
+        Assert.EndsWith("another.exe", FindIcon(h, "k1"));
+    }
+
+    [Fact]
+    public async Task KeyNamingAutoFolderGeneratesWhenItAppears()
+    {
+        using var h = new Harness();
+        var dir = h.Tmp.MakeDir("tools");
+        h.Tmp.Touch("tools", "tool.exe");
+        Assert.Null(h.Config.AddAutoFolder(null, "Tools", new ListSource { Type = SourceType.Directory, Path = dir }, out var auto, out _));
+
+        await h.HandleAsync(Appear("k0", 0, 0, settings: $$"""{"list":"{{auto}}"}"""));
+
+        Assert.EndsWith("tool.exe", FindIcon(h, "k0"));
+    }
+
+    [Fact]
+    public async Task AutoListKeyOpensLauncherWithItsSourceAndNestedFolders()
+    {
+        using var h = new Harness();
+        var dir = h.Tmp.MakeDir("tools");
+        h.Tmp.Touch("tools", "tool.exe");
+        h.Tmp.Touch("tools", "notes.cmd");
+        h.Tmp.Touch("tools", "Sub", "inner.exe");
+        var settings = new System.Text.Json.Nodes.JsonObject { ["source"] = "directory", ["path"] = dir, ["types"] = "exe" }.ToJsonString();
+        var key = KeyController.Key.From(Appear("auto", 0, 0, settings: settings, action: KeyController.AutoAction));
+
+        await h.Controller.OpenAutoListAsync(key);
+        await h.HandleAsync(Appear("back", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("k2", 2, 0));
+        await h.HandleAsync(Appear("k3", 3, 0));
+
+        Assert.Contains(("switch", Device, "profiles/Managed App Launcher"), h.Deck.Calls);
+        Assert.Equal("back", FindIcon(h, "back"));
+        Assert.Equal("folder Sub", FindIcon(h, "k1"));
+        Assert.EndsWith("tool.exe", FindIcon(h, "k2"));
+        Assert.Equal("blank", FindIcon(h, "k3"));
+
+        await PressFolderAsync(h, "k1", 1, 0);
+        Assert.EndsWith("inner.exe", FindIcon(h, "k1"));
+        Assert.DoesNotContain(h.Config.Store.Values, l => l.Kind == ListKind.Dynamic);
+    }
+
+    [Fact]
+    public async Task AutoListKeyDefaultsToSteamAndPaintsNothingItself()
+    {
+        using var h = new Harness();
+        var sources = new AutoFolderTests.FakeSources { Games = { new SteamGame(7, "Game", h.Tmp.Path, null) } };
+        h.Controller.Sources = sources;
+        await h.HandleAsync(Appear("auto", 0, 0, action: KeyController.AutoAction));
+        Assert.DoesNotContain(h.Deck.Calls, c => c.Item2 == "auto" && c.Item1 is "image" or "title");
+
+        await h.Controller.OpenAutoListAsync(KeyController.Key.From(Appear("auto", 0, 0, action: KeyController.AutoAction)));
+        await h.HandleAsync(Appear("k1", 1, 0));
+
+        Assert.Equal("steam://rungameid/7", h.Controller.EntryFor(KeyController.Key.From(Appear("k1", 1, 0)))!.Target);
+    }
+
+    [Theory]
+    [InlineData(null, "back")]
+    [InlineData("false", "icon:")]
+    public async Task AutoListKeyRepeatsBackOnEveryPageUnlessTurnedOff(string? everyPage, string secondPageKey0)
+    {
+        using var h = new Harness();
+        var sources = new AutoFolderTests.FakeSources();
+        for (var i = 0; i < 30; i++)
+            sources.Games.Add(new SteamGame(i, $"Game {i:00}", h.Tmp.Path, null));
+        h.Controller.Sources = sources;
+        var settings = everyPage is null ? "{}" : $$"""{"backEveryPage":"{{everyPage}}"}""";
+        var auto = KeyController.Key.From(Appear("auto", 0, 0, settings: settings, action: KeyController.AutoAction));
+        await h.Controller.OpenAutoListAsync(auto);
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("nav", 4, 2));
+
+        Assert.Equal("next 1/3", FindIcon(h, "nav"));
+        await h.Controller.TurnPageAsync(KeyController.Key.From(Appear("nav", 4, 2)), +1);
+
+        Assert.StartsWith(secondPageKey0, FindIcon(h, "k0"));
+        await h.HandleAsync(Appear("prev", 0, 2));
+        Assert.Equal("previous 2/3", FindIcon(h, "prev"));
+    }
+
+    [Fact]
+    public async Task AutoListKeyCanUseCarousel()
+    {
+        using var h = new Harness();
+        var sources = new AutoFolderTests.FakeSources();
+        for (var i = 0; i < 30; i++)
+            sources.Games.Add(new SteamGame(i, $"Game {i:00}", h.Tmp.Path, null));
+        h.Controller.Sources = sources;
+        var auto = KeyController.Key.From(Appear("auto", 0, 0, settings: """{"navigation":"carousel"}""", action: KeyController.AutoAction));
+        await h.Controller.OpenAutoListAsync(auto);
+        await h.HandleAsync(Appear("k10", 0, 2));
+        await h.Controller.TurnPageAsync(KeyController.Key.From(Appear("nav", 4, 2)), +1);
+
+        Assert.StartsWith("icon:", FindIcon(h, "k10"));
+    }
+
+    [Fact]
+    public void BackOnEveryPageIsInheritedByFolders()
+    {
+        var config = new AppConfig().Normalize();
+        Assert.Null(config.AddFolder(null, "Sub", out var sub, out _));
+        Assert.False(config.BackOnEveryPageOf(sub));
+
+        config.UpdateOptions(null, o => o.BackOnEveryPage = true);
+        Assert.True(config.BackOnEveryPageOf(sub));
+        config.UpdateOptions(sub, o => o.BackOnEveryPage = false);
+        Assert.False(config.BackOnEveryPageOf(sub));
+        Assert.True(config.InheritedBackOnEveryPageOf(sub));
+    }
+
+    [Fact]
+    public async Task ListThemeColorsControlAndFolderKeysAndFoldersInheritIt()
+    {
+        using var h = new Harness();
+        for (var i = 0; i < 16; i++)
+            h.AddApp($"app{i:00}");
+        Assert.Null(h.Config.AddFolder(null, "Tools", out var tools, out _, 0));
+        h.Config.UpdateOptions(null, o => o.Theme = KeyTheme.Blue);
+        await h.Controller.OpenLauncherAsync(KeyController.Key.From(Appear("opener", 0, 0, action: KeyController.OpenAction)));
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("k1", 1, 0));
+        await h.HandleAsync(Appear("nav", 4, 2));
+
+        Assert.Equal("back blue", FindIcon(h, "k0"));
+        Assert.Equal("folder Tools blue", FindIcon(h, "k1"));
+        Assert.Equal("next 1/2 blue", FindIcon(h, "nav"));
+
+        await PressFolderAsync(h, "k1", 1, 0);
+        Assert.Equal("up blue", FindIcon(h, "k0"));
+        Assert.Equal(KeyTheme.Blue, h.Config.ThemeOf(tools));
+    }
+
+    [Fact]
+    public async Task OpenKeyPaintsInListThemeOrOwnColorAndGreyKeepsStreamDeckImage()
+    {
+        using var h = new Harness();
+        h.Config.EnsureList("dev");
+        await h.HandleAsync(Appear("plain", 0, 0, settings: """{"list":"dev"}""", action: KeyController.OpenAction));
+        Assert.DoesNotContain(h.Deck.Calls, c => c.Item2 == "plain" && c.Item1 == "image");
+
+        h.Config.UpdateOptions("dev", o => o.Theme = KeyTheme.Red);
+        await h.Controller.OnConfigChangedAsync();
+        Assert.Equal("open dev  red", FindIcon(h, "plain"));
+
+        await h.HandleAsync(Appear("own", 1, 0, settings: """{"list":"dev","color":"blue"}""", action: KeyController.OpenAction));
+        Assert.Equal("open dev  blue", FindIcon(h, "own"));
+    }
+
+    [Fact]
+    public async Task AutoListColorPaintsKeyAndLauncherKeys()
+    {
+        using var h = new Harness();
+        h.Controller.Sources = new AutoFolderTests.FakeSources();
+        await h.HandleAsync(Appear("auto", 0, 0, settings: """{"color":"red"}""", action: KeyController.AutoAction));
+        Assert.Equal("auto red", FindIcon(h, "auto"));
+
+        await h.Controller.OpenAutoListAsync(KeyController.Key.From(Appear("auto", 0, 0, settings: """{"color":"red"}""", action: KeyController.AutoAction)));
+        await h.HandleAsync(Appear("k0", 0, 0));
+        await h.HandleAsync(Appear("last", 4, 2));
+
+        Assert.Equal("back red", FindIcon(h, "k0"));
+        Assert.Equal("manage red", FindIcon(h, "last"));
+    }
+
     internal sealed class FakeSource : IProcessSource
     {
         public IReadOnlyList<ProcessInfo> Processes { get; set; } = [];
@@ -873,14 +1237,29 @@ public class PluginTests
             return Task.FromResult("icon:" + visual.IconSource);
         }
 
-        public string NextPage(int page, int pages) => $"next {page + 1}/{pages}";
+        /// <summary>Grey images keep their plain names; other themes append the theme.</summary>
+        private static string Themed(string image, KeyTheme theme) => theme == KeyTheme.Grey ? image : $"{image} {theme.ToString().ToLowerInvariant()}";
+
+        public string NextPage(int page, int pages, KeyTheme theme) => Themed($"next {page + 1}/{pages}", theme);
+
+        public string PreviousPage(int page, int pages, KeyTheme theme) => Themed($"previous {page + 1}/{pages}", theme);
 
         public string Blank => "blank";
 
-        public string Back => "back";
+        public string Back(KeyTheme theme) => Themed("back", theme);
 
-        public string Manage => "manage";
-        public Task<string> OpenAsync(string list, string icon) => Task.FromResult($"open {list} {icon}");
+        public string Manage(KeyTheme theme) => Themed("manage", theme);
+
+        public Task<string> OpenAsync(string list, string? icon, KeyTheme theme) => Task.FromResult(Themed($"open {list} {icon}", theme));
+
+        public string AutoList(KeyTheme theme) => Themed("auto", theme);
+
+        public string Up(KeyTheme theme) => Themed("up", theme);
+
+        public Task<string> FolderAsync(string name, string? icon, bool link, KeyTheme theme) =>
+            Task.FromResult(Themed($"{(link ? "link" : "folder")} {name}{(icon is null ? "" : " " + icon)}", theme));
+
+        public string BrokenLink(string name, KeyTheme theme) => Themed($"broken {name}", theme);
 
     }
 

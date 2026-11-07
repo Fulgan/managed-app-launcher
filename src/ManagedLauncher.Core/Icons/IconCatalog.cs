@@ -41,7 +41,7 @@ public static class IconCatalog
     public static IReadOnlyList<IconChoice> Apps(IEnumerable<Config.Entry> entries, int size)
     {
         var choices = new List<IconChoice>();
-        foreach (var entry in entries.Where(e => !e.IsBreak))
+        foreach (var entry in entries.Where(e => e.IsApp))
         {
             var value = AppIcon(entry);
             if (value is null || choices.Any(c => string.Equals(c.Value, value, StringComparison.OrdinalIgnoreCase)))

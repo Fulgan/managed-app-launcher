@@ -28,7 +28,12 @@ public partial class MainWindow : Window
     private readonly FileSystemWatcher watcher;
     private AppConfig config = new AppConfig().Normalize();
     private ObservableCollection<AppItem> items = [];
+
+    /// <summary>Id of the list or folder shown in the middle column.</summary>
     private string currentList = AppConfig.DefaultListName;
+
+    /// <summary>Lists whose folders show in the sidebar; kept for the session only.</summary>
+    private readonly HashSet<string> expanded = [];
 
     /// <summary>The config as last loaded or saved here; a file change that matches it is this window's own write.</summary>
     private string knownConfig = "";
@@ -48,6 +53,9 @@ public partial class MainWindow : Window
         FillCombo(KillModeBox, ("", "default"), ("all", "all instances"), ("newest", "newest instance"));
         FillCombo(AdminBox, ("", "default"), ("true", "always"), ("false", "never"));
         FillCombo(IndicatorBox, ("", "default"), ("dot", "dot"), ("border", "border"));
+        FillCombo(ThemeBox, ("", "default"), ("grey", "grey"), ("blue", "blue"), ("red", "red"));
+        FillCombo(BackBox, ("", "default"), ("false", BackText(false)), ("true", BackText(true)));
+        FillCombo(NavigationBox, ("", "default"), ("carousel", NavigationText(Navigation.Carousel)), ("arrows", NavigationText(Navigation.Arrows)));
         ShowInherited();
         StartTestPoll();
         SteamMenuItem.Visibility = SteamLibrary.InstallPath() is null ? Visibility.Collapsed : Visibility.Visible;
@@ -105,22 +113,56 @@ public partial class MainWindow : Window
         config = loaded;
         knownConfig = Fingerprint(config);
         var selected = keepSelection ? AppsBox.SelectedIndex : -1;
-        if (!config.Lists.ContainsKey(currentList))
+        if (!config.Exists(currentList))
             currentList = config.HomeList;
+        var stored = AutoFolders.Split(currentList).ListId;
+        expanded.UnionWith(config.AncestorsOf(stored).Skip(1));
 
         filling = true;
-        ListsBox.ItemsSource = ListNames().Select(name => new ListRow(name)).ToList();
-        ListsBox.SelectedItem = ListsBox.Items.Cast<ListRow>().FirstOrDefault(r => string.Equals(r.Name, currentList, StringComparison.OrdinalIgnoreCase));
+        ListsBox.ItemsSource = SidebarRows();
+        ListsBox.SelectedItem = ListsBox.Items.Cast<ListRow>().FirstOrDefault(r => r.Id == stored);
         ShowDecks();
         filling = false;
 
         ShowList(selected);
     }
 
-    /// <summary>Home list first, then the others by name.</summary>
-    private IEnumerable<string> ListNames() => config.Lists.Keys
-        .OrderBy(k => !string.Equals(k, config.HomeList, StringComparison.OrdinalIgnoreCase))
-        .ThenBy(k => k, StringComparer.OrdinalIgnoreCase);
+    /// <summary>Home list first, then the other top-level lists by name, each followed by its folders while expanded.</summary>
+    private IEnumerable<(string Id, int Depth)> TreeOrder(bool all)
+    {
+        var tree = config.Tree();
+        var tops = tree.Where(t => t.Depth == 1)
+            .OrderBy(t => t.Id != config.HomeList)
+            .ThenBy(t => config.NameOf(t.Id), StringComparer.OrdinalIgnoreCase);
+        foreach (var top in tops)
+        {
+            var start = tree.ToList().IndexOf(top);
+            var hiddenBelow = int.MaxValue;
+            for (var i = start; i < tree.Count && (i == start || tree[i].Depth > 1); i++)
+            {
+                var (id, depth) = tree[i];
+                if (depth > hiddenBelow)
+                    continue;
+                hiddenBelow = all || expanded.Contains(id) ? int.MaxValue : depth;
+                yield return (id, depth);
+            }
+        }
+    }
+
+    private List<ListRow> SidebarRows() => TreeOrder(all: false)
+        .Select(t => new ListRow(t.Id, config.NameOf(t.Id), t.Depth, config.Children(t.Id).Count > 0, expanded.Contains(t.Id), config.IsDynamic(t.Id)))
+        .ToList();
+
+    private void ToggleExpand_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ListRow row })
+            return;
+        if (!expanded.Remove(row.Id))
+            expanded.Add(row.Id);
+        if (!expanded.Contains(row.Id) && config.AncestorsOf(currentList).Skip(1).Contains(row.Id))
+            currentList = row.Id;
+        Reload(keepSelection: true, config);
+    }
 
     private ListRow? SelectedRow => ListsBox.SelectedItem as ListRow;
 
@@ -134,10 +176,10 @@ public partial class MainWindow : Window
         {
             var box = new ComboBox { Tag = deck.Id, Margin = new Thickness(0, 0, 0, 6), HorizontalAlignment = HorizontalAlignment.Left };
             box.Items.Add(new ComboBoxItem { Content = "No fixed list", Tag = "" });
-            foreach (var list in ListNames())
-                box.Items.Add(new ComboBoxItem { Content = list, Tag = list });
+            foreach (var (list, depth) in TreeOrder(all: true))
+                box.Items.Add(new ComboBoxItem { Content = new string(' ', (depth - 1) * 4) + config.NameOf(list), Tag = list });
             var current = config.Decks.GetValueOrDefault(deck.Id) ?? "";
-            box.SelectedItem = box.Items.Cast<ComboBoxItem>().FirstOrDefault(i => string.Equals((string)i.Tag, current, StringComparison.OrdinalIgnoreCase));
+            box.SelectedItem = box.Items.Cast<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == current);
             box.SelectionChanged += Deck_Changed;
             DecksPanel.Children.Add(new TextBlock
             {
@@ -157,6 +199,45 @@ public partial class MainWindow : Window
         TryUpdate(c => c.UpdateOptions(list, o => o.ReturnAfterLaunch = on));
     }
 
+    private static string NavigationText(Navigation navigation) => navigation switch
+    {
+        Navigation.Arrows => "previous & next arrows",
+        _ => "carousel",
+    };
+
+    private void Theme_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (filling)
+            return;
+        var list = currentList;
+        var theme = Parse<KeyTheme>((ThemeBox.SelectedItem as ComboBoxItem)?.Tag as string);
+        if (TryUpdate(c => c.UpdateOptions(list, o => o.Theme = theme)))
+            Reload(keepSelection: true);
+    }
+
+    private static string BackText(bool everyPage) => everyPage ? "on every page" : "on the first page only";
+
+    private void Back_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (filling)
+            return;
+        var list = currentList;
+        var value = (BackBox.SelectedItem as ComboBoxItem)?.Tag as string;
+        bool? everyPage = string.IsNullOrEmpty(value) ? null : value == "true";
+        if (TryUpdate(c => c.UpdateOptions(list, o => o.BackOnEveryPage = everyPage)))
+            UpdatePages();
+    }
+
+    private void Navigation_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (filling)
+            return;
+        var list = currentList;
+        var navigation = Parse<Navigation>((NavigationBox.SelectedItem as ComboBoxItem)?.Tag as string);
+        if (TryUpdate(c => c.UpdateOptions(list, o => o.Navigation = navigation)))
+            UpdatePages();
+    }
+
     private void ListIcon_Click(object sender, RoutedEventArgs e)
     {
         var list = currentList;
@@ -171,8 +252,11 @@ public partial class MainWindow : Window
     private void LoadOpenKeyPreview()
     {
         var list = currentList;
+        var name = config.NameOf(list);
         var icon = config.OptionsOf(list).Icon;
-        App.Shell.RunAsync(() => KeyImages.RenderOpen(list, icon)).ContinueWith(
+        var folder = config.ParentOf(list) is not null;
+        var theme = folder ? config.ThemeOf(config.ParentOf(list)) : config.ThemeOf(list);
+        App.Shell.RunAsync(() => folder ? KeyImages.RenderFolder(name, icon, link: false, broken: false, theme) : KeyImages.RenderOpen(name, icon, theme)).ContinueWith(
             t => { if (t.Status == TaskStatus.RanToCompletion && currentList == list) OpenKeyPreview.Source = t.Result; },
             TaskScheduler.FromCurrentSynchronizationContext());
     }
@@ -190,19 +274,59 @@ public partial class MainWindow : Window
         });
     }
 
+    /// <summary>The list holding the current one: its parent list, or for a generated folder the folder around it.</summary>
+    private string? ParentOfCurrent()
+    {
+        var (stored, nested) = AutoFolders.Split(currentList);
+        if (nested.Length == 0)
+            return config.ParentOf(stored);
+        var cut = nested.LastIndexOf('\\');
+        return cut < 0 ? stored : AutoFolders.NestedId(stored, nested[..cut]);
+    }
+
     private void ShowList(int select = -1)
     {
-        ListTitle.Text = currentList;
-        ListTitle.ToolTip = string.Equals(currentList, config.HomeList, StringComparison.OrdinalIgnoreCase)
-            ? "Home list: shown by keys and decks that don't name a list"
-            : null;
+        var parent = ParentOfCurrent();
+        var auto = config.IsDynamic(currentList);
+        var nested = AutoFolders.IsNested(currentList);
+        AddAppButton.IsEnabled = !auto;
+        InsertButton.IsEnabled = !auto;
+        ListIconButton.Visibility = nested ? Visibility.Collapsed : Visibility.Visible;
+        ShowSource();
+        ListTitle.Text = config.NameOf(currentList);
+        ListTitle.ToolTip = currentList == config.HomeList ? "Home list: shown by keys and decks that don't name a list" : null;
+        ParentText.Text = parent is null ? "" : $"in {config.PathOf(parent)}";
+        ParentText.Visibility = parent is null ? Visibility.Collapsed : Visibility.Visible;
+        ReturnAfterLaunchBox.ToolTip = parent is null
+            ? "After a launch, the deck returns to the previous profile, or to the first page"
+            : "After a launch, the deck goes back to the list holding this folder";
+        ListIconButton.ToolTip = parent is null ? "Icon of this list's Open Launcher keys" : "Icon of this folder's key";
         var wasFilling = filling;
         filling = true;
         ReturnAfterLaunchBox.IsChecked = config.OptionsOf(currentList).ReturnAfterLaunch;
+        ((ComboBoxItem)NavigationBox.Items[0]).Content = $"default: {NavigationText(config.InheritedNavigationOf(currentList))}";
+        Select(NavigationBox, config.OptionsOf(currentList).Navigation?.ToString().ToLowerInvariant());
+        ((ComboBoxItem)ThemeBox.Items[0]).Content = $"default: {config.InheritedThemeOf(currentList).ToString().ToLowerInvariant()}";
+        Select(ThemeBox, config.OptionsOf(currentList).Theme?.ToString().ToLowerInvariant());
+        ((ComboBoxItem)BackBox.Items[0]).Content = $"default: {BackText(config.InheritedBackOnEveryPageOf(currentList))}";
+        Select(BackBox, config.OptionsOf(currentList).BackOnEveryPage?.ToString().ToLowerInvariant());
         filling = wasFilling;
         LoadOpenKeyPreview();
-        items = new ObservableCollection<AppItem>(config.GetList(currentList).Select(e => new AppItem(e)));
+        showSeq++;
+        if (auto)
+        {
+            ShowGenerated(select);
+            return;
+        }
+        ShowItems(config.GetList(currentList).Select(e => new AppItem(e, config)), select);
         listBaseline = Fingerprint(config.GetList(currentList));
+    }
+
+    private int showSeq;
+
+    private void ShowItems(IEnumerable<AppItem> rows, int select)
+    {
+        items = new ObservableCollection<AppItem>(rows);
         AppsBox.ItemsSource = items;
         if (select >= 0 && select < items.Count)
             AppsBox.SelectedIndex = select;
@@ -212,25 +336,143 @@ public partial class MainWindow : Window
         ShowDetails();
     }
 
+    /// <summary>
+    /// Shows what an auto-folder generates right now, hidden items dimmed and overrides applied, once the source has
+    /// been read on the shell thread.
+    /// </summary>
+    private void ShowGenerated(int select)
+    {
+        var list = currentList;
+        var seq = showSeq;
+        var snapshot = config;
+        ShowItems([], -1);
+        App.Shell.RunAsync(() => snapshot.Generate(list, new SystemAppSources(), raw: true)).ContinueWith(t =>
+        {
+            if (t.Status != TaskStatus.RanToCompletion || seq != showSeq)
+                return;
+            var overrides = config.Store[AutoFolders.Split(list).ListId].Items;
+            ShowItems(t.Result.Select(raw =>
+            {
+                var over = raw.IsApp ? overrides.FirstOrDefault(o => string.Equals(o.Target, raw.Target, StringComparison.OrdinalIgnoreCase)) : null;
+                return new AppItem(over is null ? Clone(raw) : AutoFolders.Merge(raw, over), config)
+                {
+                    Generated = raw,
+                    IsHidden = config.IsHidden(list, raw.Target),
+                };
+            }), select);
+        }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
+
+    private static Entry Clone(Entry entry) =>
+        System.Text.Json.JsonSerializer.Deserialize<Entry>(System.Text.Json.JsonSerializer.Serialize(entry, ConfigStore.JsonOptions), ConfigStore.JsonOptions)!;
+
+    /// <summary>The auto-folder's source line and, for a directory, its folder and file-type menu.</summary>
+    private void ShowSource()
+    {
+        var source = config.SourceOf(currentList);
+        SourcePanel.Visibility = source is null ? Visibility.Collapsed : Visibility.Visible;
+        if (source is null)
+            return;
+        var directory = source.Type == SourceType.Directory;
+        var types = source.Types is { Count: > 0 } t ? t : AutoFolders.AllTypes;
+        SourceText.Text = directory ? $"Auto folder · {source.Path} · {string.Join(", ", types)}" : $"Auto folder · {AutoFolders.Describe(source)}";
+        SourceText.ToolTip = SourceText.Text;
+        SourceButton.Visibility = directory && !AutoFolders.IsNested(currentList) ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var item in new[] { TypeExe, TypeLnk, TypeSymlink, TypeBat })
+            item.IsChecked = types.Contains((string)item.Tag, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void SourceDirectory_Click(object sender, RoutedEventArgs e)
+    {
+        var list = AutoFolders.Split(currentList).ListId;
+        var current = config.SourceOf(list)?.Path;
+        var dialog = new OpenFolderDialog { Title = "Directory the auto folder shows" };
+        if (current is not null && Directory.Exists(TargetResolver.Expand(current)))
+            dialog.InitialDirectory = TargetResolver.Expand(current);
+        if (dialog.ShowDialog(this) == true && TryUpdate(c => c.SourceOf(list)!.Path = dialog.FolderName))
+            Reload(keepSelection: false);
+    }
+
+    /// <summary>Toggles one file type of a directory auto-folder; at least one type stays on.</summary>
+    private void SourceType_Click(object sender, RoutedEventArgs e)
+    {
+        var list = AutoFolders.Split(currentList).ListId;
+        var types = new[] { TypeExe, TypeLnk, TypeSymlink, TypeBat }.Where(i => i.IsChecked).Select(i => (string)i.Tag).ToList();
+        if (types.Count == 0)
+        {
+            ((MenuItem)sender).IsChecked = true;
+            return;
+        }
+        if (TryUpdate(c => c.SourceOf(list)!.Types = types.Count == AutoFolders.AllTypes.Count ? null : types))
+            Reload(keepSelection: false);
+    }
+
+    private void AddAutoFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string tag })
+            return;
+        var type = Enum.Parse<SourceType>(tag, ignoreCase: true);
+        var source = new ListSource { Type = type };
+        var name = type switch
+        {
+            SourceType.Steam => "Steam",
+            SourceType.StartMenu => "Start menu",
+            SourceType.Running => "Running",
+            _ => "",
+        };
+        if (type == SourceType.Directory)
+        {
+            var dialog = new OpenFolderDialog { Title = "Directory the auto folder shows" };
+            if (dialog.ShowDialog(this) != true)
+                return;
+            source.Path = dialog.FolderName;
+            name = Path.GetFileName(dialog.FolderName.TrimEnd('\\')) is { Length: > 0 } leaf ? leaf : dialog.FolderName;
+        }
+        var list = currentList;
+        var baseline = listBaseline;
+        var at = InsertIndex();
+        string? id = null, error = null;
+        if (!TryUpdate(c => error = c.AddAutoFolder(CheckBaseline(c, list, baseline), c.UnusedListName(name, list), source, out id, out _, at)))
+            return;
+        if (error is not null)
+        {
+            StatusText.Text = error;
+            return;
+        }
+        currentList = id!;
+        Reload(keepSelection: false);
+    }
+
     private void LoadIcon(AppItem item)
     {
         if (item.IsBreak)
             return;
         var entry = item.Entry;
         var snapshot = config;
-        App.Shell.RunAsync(() => KeyImages.Render(entry, snapshot)).ContinueWith(
-            t => { if (t.Status == TaskStatus.RanToCompletion) item.Icon = t.Result; },
+        var seq = showSeq;
+        var theme = config.ThemeOf(currentList);
+        App.Shell.RunAsync(() => seq != Volatile.Read(ref showSeq) ? null : entry.Opens is { } opens
+            ? KeyImages.RenderFolder(snapshot.TitleOf(entry), AutoFolders.IsNested(opens) ? null : snapshot.OptionsOf(opens).Icon, entry.IsLink, entry.LinkProblem is not null, theme)
+            : KeyImages.Render(entry, snapshot)).ContinueWith(
+            t => { if (t.Status == TaskStatus.RanToCompletion && t.Result is not null) item.Icon = t.Result; },
             TaskScheduler.FromCurrentSynchronizationContext());
     }
 
     private void UpdatePages()
     {
         var kinds = items.Select(i => i.Entry.LayoutKind).ToList();
-        var apps = items.Count(i => !i.IsBreak);
+        var counts = string.Join(", ", new[]
+            {
+                Count(items.Count(i => i.IsApp), "app"),
+                Count(items.Count(i => i.Entry.IsFolder), "folder"),
+                Count(items.Count(i => i.Entry.IsLink), "link"),
+            }.Where((text, i) => i == 0 || !text.StartsWith("0 ", StringComparison.Ordinal)));
+        var lead = ParentOfCurrent() is not null;
+        var navigation = config.NavigationOf(currentList);
         var pages = LauncherProfiles.All
             .GroupBy(p => (p.Columns, p.Rows))
-            .Select(g => $"{string.Join(" / ", g.Select(p => p.Label))}: {new LauncherLayout(g.Key.Columns * g.Key.Rows, g.Key.Columns, kinds).PageCount}");
-        PagesText.Text = $"{apps} apps · pages on {string.Join(" · ", pages)}";
+            .Select(g => $"{string.Join(" / ", g.Select(p => p.Label))}: {new LauncherLayout(g.Key.Columns * g.Key.Rows, g.Key.Columns, kinds, lead, KeyRole.Up, navigation, config.BackOnEveryPageOf(currentList)).PageCount}");
+        PagesText.Text = $"{counts} · pages on {string.Join(" · ", pages)}";
     }
 
     /// <summary>Raised inside an update when the file no longer holds the list the window is editing.</summary>
@@ -243,20 +485,24 @@ public partial class MainWindow : Window
     /// </summary>
     private void Save()
     {
+        if (config.IsDynamic(currentList))
+            return;
         var entries = items.Select(i => i.Entry).ToList();
         var list = currentList;
         var baseline = listBaseline;
         if (TryUpdate(c =>
             {
-                if (!c.Lists.TryGetValue(list, out var current) || Fingerprint(current) != baseline)
-                    throw new ListChangedElsewhere();
-                c.Lists[list] = entries;
+                c.Store[CheckBaseline(c, list, baseline)].Items = entries;
             }))
         {
             listBaseline = Fingerprint(entries);
             UpdatePages();
         }
     }
+
+    /// <summary>The list's id when the file still holds the list as the window last loaded or saved it; throws otherwise.</summary>
+    private static string CheckBaseline(AppConfig c, string list, string baseline) =>
+        c.Store.TryGetValue(list, out var current) && Fingerprint(current.Items) == baseline ? list : throw new ListChangedElsewhere();
 
     /// <summary>Applies one change through the shared lock and keeps the window's copy in step; reports failure in the status bar.</summary>
     private bool TryUpdate(Action<AppConfig> mutate)
@@ -366,28 +612,28 @@ public partial class MainWindow : Window
         if (filling || SelectedRow is not { } selected)
             return;
         StatusText.Text = "";
-        currentList = selected.Name;
+        currentList = selected.Id;
         ShowList();
     }
 
     private void AddList_Click(object sender, RoutedEventArgs e)
     {
-        string? name = null;
-        if (!TryUpdate(c => c.AddList(name = c.UnusedListName("New list"))))
+        string? id = null;
+        if (!TryUpdate(c => id = c.AddList(c.UnusedListName("New list"))))
             return;
-        currentList = name!;
+        currentList = id!;
         Reload(keepSelection: false);
         BeginRename();
     }
 
     private void DuplicateList_Click(object sender, RoutedEventArgs e)
     {
-        if (SelectedRow?.Name is not { } source)
+        if (SelectedRow?.Id is not { } source)
             return;
-        string? name = null;
-        if (!TryUpdate(c => name = c.CopyList(source)))
+        string? id = null;
+        if (!TryUpdate(c => id = c.CopyList(source)))
             return;
-        currentList = name!;
+        currentList = id!;
         Reload(keepSelection: false);
         BeginRename();
     }
@@ -430,7 +676,7 @@ public partial class MainWindow : Window
     private void ListName_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (sender is TextBox { DataContext: ListRow { IsEditing: true } row })
-            row.Error = config.CheckListName(row.Name, row.Draft);
+            row.Error = config.CheckListName(row.Id, row.Draft);
     }
 
     private void ListName_KeyDown(object sender, KeyEventArgs e)
@@ -465,41 +711,51 @@ public partial class MainWindow : Window
     private void CommitRename(ListRow row)
     {
         row.IsEditing = false;
-        var from = row.Name;
+        var id = row.Id;
         var name = row.Draft.Trim();
-        if (name == from)
+        if (name == row.Name)
             return;
-        var error = config.CheckListName(from, name);
-        if (error is null && !TryUpdate(c => error = c.RenameList(from, name)))
+        var error = config.CheckListName(id, name);
+        if (error is null && !TryUpdate(c => error = c.RenameList(id, name)))
             return;
         if (error is not null)
         {
             StatusText.Text = $"Name not changed. {error}";
             return;
         }
-        if (string.Equals(currentList, from, StringComparison.OrdinalIgnoreCase))
-            currentList = name;
         Dispatcher.BeginInvoke(() => Reload(keepSelection: true), DispatcherPriority.Background);
     }
 
     private async void RemoveList_Click(object sender, RoutedEventArgs e)
     {
-        if (SelectedRow?.Name is not { } name)
+        if (SelectedRow is not { } row)
             return;
-        if (string.Equals(name, config.HomeList, StringComparison.OrdinalIgnoreCase))
+        if (row.Id == config.HomeList)
         {
-            StatusText.Text = $"'{name}' is the home list, shown when a key or deck names no list. It can't be removed.";
+            StatusText.Text = $"'{row.Name}' is the home list, shown when a key or deck names no list. It can't be removed.";
             return;
         }
-        var count = config.GetList(name).Count;
-        if (!await ConfirmAsync($"Remove list “{name}”?",
-                $"Its {count} app{(count == 1 ? "" : "s")} will be removed too. Keys set to this list go blank until you pick another list.", "Remove"))
+        if (!await ConfirmRemoveListAsync(row.Id))
             return;
-        if (!TryUpdate(c => c.Lists.Remove(name)))
+        var parent = config.ParentOf(row.Id);
+        if (!TryUpdate(c => c.RemoveList(row.Id)))
             return;
-        currentList = config.HomeList;
+        currentList = parent ?? config.HomeList;
         Reload(keepSelection: false);
     }
+
+    /// <summary>Confirms removing a list or folder, naming everything that goes with it.</summary>
+    private Task<bool> ConfirmRemoveListAsync(string id)
+    {
+        var name = config.NameOf(id);
+        var (apps, folders) = config.ContentsOf(id);
+        var inside = folders == 0 ? Count(apps, "app") : $"{Count(apps, "app")} and {Count(folders, "folder")}";
+        return config.ParentOf(id) is null
+            ? ConfirmAsync($"Remove list “{name}”?", $"Its {inside} will be removed too. Keys set to this list go blank until you pick another list.", "Remove")
+            : ConfirmAsync($"Remove folder “{name}”?", $"Its {inside} will be removed too.", "Remove");
+    }
+
+    private static string Count(int n, string what) => $"{n} {what}{(n == 1 ? "" : "s")}";
 
     // Adding apps
 
@@ -550,6 +806,76 @@ public partial class MainWindow : Window
         menu.IsOpen = true;
     }
 
+    /// <summary>Adds an empty folder after the selection, selects it in the sidebar and starts its rename.</summary>
+    private void AddFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var list = currentList;
+        var baseline = listBaseline;
+        var at = InsertIndex();
+        string? id = null, error = null;
+        if (!TryUpdate(c => error = c.AddFolder(CheckBaseline(c, list, baseline), c.UnusedListName("New folder", list), out id, out _, at)))
+            return;
+        if (error is not null)
+        {
+            StatusText.Text = error;
+            return;
+        }
+        currentList = id!;
+        Reload(keepSelection: false);
+        BeginRename();
+    }
+
+    /// <summary>Fills "Link to list" with every list; lists a link here would loop back to are disabled with the reason.</summary>
+    private void InsertMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        LinkMenu.Items.Clear();
+        foreach (var (id, depth) in TreeOrder(all: true))
+        {
+            var problem = config.CheckLink(currentList, id);
+            var item = new MenuItem
+            {
+                Header = new string(' ', (depth - 1) * 4) + config.NameOf(id),
+                Tag = id,
+                IsEnabled = problem is null,
+                ToolTip = problem,
+            };
+            ToolTipService.SetShowOnDisabled(item, true);
+            item.Click += AddLink_Click;
+            LinkMenu.Items.Add(item);
+        }
+    }
+
+    private void AddLink_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string target })
+            return;
+        var list = currentList;
+        var baseline = listBaseline;
+        var at = InsertIndex();
+        string? error = null;
+        var index = -1;
+        if (!TryUpdate(c => error = c.AddLink(CheckBaseline(c, list, baseline), target, out index, at)))
+            return;
+        if (error is not null)
+        {
+            StatusText.Text = error;
+            return;
+        }
+        Reload(keepSelection: false);
+        AppsBox.SelectedIndex = index;
+        AppsBox.ScrollIntoView(AppsBox.SelectedItem);
+    }
+
+    /// <summary>Double-click on a folder row shows the folder; on a link row, the list it opens.</summary>
+    private void AppsBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source || ItemsControl.ContainerFromElement(AppsBox, source) is null
+            || Selected?.Entry.Opens is not { } opens || !config.Exists(opens))
+            return;
+        currentList = opens;
+        Reload(keepSelection: false);
+    }
+
     private void AddRowBreak_Click(object sender, RoutedEventArgs e) => AddBreak(ListBreak.Row);
 
     private void AddPageBreak_Click(object sender, RoutedEventArgs e) => AddBreak(ListBreak.Page);
@@ -557,7 +883,7 @@ public partial class MainWindow : Window
     private void AddBreak(ListBreak kind)
     {
         var at = InsertIndex();
-        var item = new AppItem(new Entry { Break = kind });
+        var item = new AppItem(new Entry { Break = kind }, config);
         items.Insert(at, item);
         Save();
         RefreshIndexes();
@@ -579,7 +905,7 @@ public partial class MainWindow : Window
         var first = index;
         foreach (var plan in plans)
         {
-            var item = new AppItem(plan.Entry);
+            var item = new AppItem(plan.Entry, config);
             items.Insert(index++, item);
             LoadIcon(item);
             advice.AddRange(plan.Advice.Select(a => $"{item.Name}: {a}"));
@@ -608,8 +934,28 @@ public partial class MainWindow : Window
     {
         if (Selected is not { } item)
             return;
+        if (item.Generated is not null)
+        {
+            var list = currentList;
+            var hide = !item.IsHidden;
+            if (TryUpdate(c => c.SetHidden(list, item.Generated.Target, hide)))
+            {
+                item.IsHidden = hide;
+                ShowDetails();
+            }
+            return;
+        }
+        if (item.Entry.IsFolder)
+        {
+            var folder = item.Entry.Folder!;
+            var list = currentList;
+            var baseline = listBaseline;
+            if (await ConfirmRemoveListAsync(folder) && TryUpdate(c => { CheckBaseline(c, list, baseline); c.RemoveList(folder); }))
+                Reload(keepSelection: true);
+            return;
+        }
         if (!await ConfirmAsync($"Remove “{item.Name}”?",
-                $"It leaves the list “{currentList}” and its key on the deck.", "Remove"))
+                $"It leaves the list “{config.NameOf(currentList)}” and its key on the deck.", "Remove"))
             return;
         var index = items.IndexOf(item);
         if (index < 0)
@@ -628,7 +974,7 @@ public partial class MainWindow : Window
     {
         var index = AppsBox.SelectedIndex;
         var to = index + delta;
-        if (index < 0 || to < 0 || to >= items.Count)
+        if (config.IsDynamic(currentList) || index < 0 || to < 0 || to >= items.Count)
             return;
         items.Move(index, to);
         Save();
@@ -660,7 +1006,7 @@ public partial class MainWindow : Window
 
     private void AppsBox_PreviewMouseMove(object sender, MouseEventArgs e)
     {
-        if (!dragArmed || e.LeftButton != MouseButtonState.Pressed || Selected is not { } item)
+        if (!dragArmed || e.LeftButton != MouseButtonState.Pressed || Selected is not { Generated: null } item)
             return;
         var delta = e.GetPosition(AppsBox) - dragStart;
         if (Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance)
@@ -671,7 +1017,8 @@ public partial class MainWindow : Window
 
     private void AppsBox_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy
+        e.Effects = config.IsDynamic(currentList) ? DragDropEffects.None
+            : e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy
             : e.Data.GetDataPresent(AppDragFormat) ? DragDropEffects.Move
             : DragDropEffects.None;
         ShowDropLine(e);
@@ -704,6 +1051,8 @@ public partial class MainWindow : Window
     private void AppsBox_Drop(object sender, DragEventArgs e)
     {
         DropLine.Visibility = Visibility.Collapsed;
+        if (config.IsDynamic(currentList))
+            return;
         var at = DropIndex(e);
         if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
         {
@@ -729,7 +1078,8 @@ public partial class MainWindow : Window
         e.Data.GetDataPresent(AppDragFormat)
         && e.OriginalSource is DependencyObject source
         && ItemsControl.ContainerFromElement(ListsBox, source) is ListBoxItem { DataContext: ListRow row }
-        && !string.Equals(row.Name, currentList, StringComparison.OrdinalIgnoreCase)
+        && row.Id != currentList
+        && !row.IsAuto
             ? row
             : null;
 
@@ -752,8 +1102,8 @@ public partial class MainWindow : Window
     private void ListsBox_DragLeave(object sender, DragEventArgs e) => HighlightDropTarget(null);
 
     /// <summary>
-    /// Appends a copy of the dragged item to the target list and, for a move, removes it from this one, in one
-    /// update; refused like any save when this list changed elsewhere since it was loaded.
+    /// Appends the dragged item to the target list (a copy, or moved out of this one) in one update; refused like
+    /// any save when this list changed elsewhere since it was loaded, and when a folder or link may not go there.
     /// </summary>
     private void ListsBox_Drop(object sender, DragEventArgs e)
     {
@@ -767,17 +1117,19 @@ public partial class MainWindow : Window
         var copy = IsCopy(e);
         var from = currentList;
         var baseline = listBaseline;
-        var json = System.Text.Json.JsonSerializer.Serialize(dragged.Entry, ConfigStore.JsonOptions);
-        if (!TryUpdate(c =>
-            {
-                if (!c.Lists.TryGetValue(from, out var source) || Fingerprint(source) != baseline || !c.Lists.TryGetValue(target.Name, out var destination))
-                    throw new ListChangedElsewhere();
-                destination.Add(System.Text.Json.JsonSerializer.Deserialize<Entry>(json, ConfigStore.JsonOptions)!);
-                if (!copy)
-                    source.RemoveAt(index);
-            }))
+        string? error = null;
+        if (!TryUpdate(c => error = c.MoveItem(CheckBaseline(c, from, baseline), index, target.Id, copy)))
             return;
-        if (!copy)
+        if (error is not null)
+        {
+            StatusText.Text = $"Not {(copy ? "copied" : "moved")}. {error}";
+            return;
+        }
+        if (dragged.Entry.IsFolder)
+        {
+            Reload(keepSelection: false);
+        }
+        else if (!copy)
         {
             items.RemoveAt(index);
             listBaseline = Fingerprint(items.Select(i => i.Entry).ToList());
@@ -814,9 +1166,13 @@ public partial class MainWindow : Window
     {
         filling = true;
         var item = Selected;
-        Details.IsEnabled = item is { IsBreak: false };
+        Details.IsEnabled = item is { IsApp: true };
         RemoveButton.IsEnabled = item is not null;
-        var entry = item?.Entry ?? new Entry();
+        RemoveButton.Content = item?.Generated is null ? "Remove" : item.IsHidden ? "Show" : "Hide";
+        TargetBox.IsReadOnly = item?.Generated is not null;
+        KindBox.IsEnabled = item?.Generated is null;
+        BrowseButton.IsEnabled = item?.Generated is null;
+        var entry = item is { IsApp: true } ? item.Entry : new Entry();
         TitleBox.Text = entry.Title ?? "";
         TargetBox.Text = entry.Target;
         ArgsBox.Text = entry.Args ?? "";
@@ -831,7 +1187,7 @@ public partial class MainWindow : Window
         Select(IndicatorBox, entry.Indicator?.ToString().ToLowerInvariant());
         PreviewImage.Source = item?.Icon;
         shownState = null;
-        ResolvedText.Text = item is null ? "" : Describe(TargetResolver.Resolve(entry));
+        ResolvedText.Text = item is { IsApp: true } ? Describe(TargetResolver.Resolve(entry)) : "";
         filling = false;
     }
 
@@ -948,7 +1304,7 @@ public partial class MainWindow : Window
 
     private void PollTestState()
     {
-        if (Selected is not { IsBreak: false } item)
+        if (Selected is not { IsApp: true } item)
             return;
         var state = tester.StateOf(item.Entry, new ProcessSnapshot(processes.Snapshot()));
         if (pendingLaunch is { } launch && launch.Item == item && state is not RunState.Starting)
@@ -978,7 +1334,7 @@ public partial class MainWindow : Window
 
     private void TestKey_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (Selected is not { IsBreak: false } item)
+        if (Selected is not { IsApp: true } item)
             return;
         TestKey.CaptureMouse();
         TestKey.Opacity = 0.6;
@@ -997,7 +1353,7 @@ public partial class MainWindow : Window
     {
         TestKey.ReleaseMouseCapture();
         TestKey.Opacity = 1;
-        if (holdTimer is not { IsEnabled: true } timer || Selected is not { IsBreak: false } item)
+        if (holdTimer is not { IsEnabled: true } timer || Selected is not { IsApp: true } item)
             return;
         timer.Stop();
         await TestPressAsync(item, isLong: false);
@@ -1052,7 +1408,15 @@ public partial class MainWindow : Window
     private void Commit(AppItem item)
     {
         item.Refresh();
-        Save();
+        if (item.Generated is { } generated)
+        {
+            var list = currentList;
+            TryUpdate(c => c.SetOverride(list, item.Entry, generated));
+        }
+        else
+        {
+            Save();
+        }
         LoadIcon(item);
         ResolvedText.Text = Describe(TargetResolver.Resolve(item.Entry));
         item.PropertyChanged += UpdatePreviewOnce;

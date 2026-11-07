@@ -148,11 +148,11 @@ public class ConfigTests
         var config = new AppConfig().Normalize();
         config.EnsureList("work").Add(new Entry { Target = "a.exe", Title = "A" });
 
-        var name = config.CopyList("work", "home");
+        var id = config.CopyList("work", "home");
         config.EnsureList("home")[0].Title = "changed";
         config.EnsureList("home").Add(new Entry { Target = "b.exe" });
 
-        Assert.Equal("home", name);
+        Assert.Equal("home", config.NameOf(id));
         Assert.Equal("A", config.GetList("work")[0].Title);
         Assert.Single(config.GetList("work"));
         Assert.Equal(2, config.GetList("home").Count);
@@ -164,9 +164,9 @@ public class ConfigTests
         var config = new AppConfig().Normalize();
         config.EnsureList("work");
 
-        Assert.Equal("work copy", config.CopyList("work"));
-        Assert.Equal("work copy 2", config.CopyList("work", " "));
-        Assert.Equal("work copy 3", config.CopyList("work", "WORK"));
+        Assert.Equal("work copy", config.NameOf(config.CopyList("work")));
+        Assert.Equal("work copy 2", config.NameOf(config.CopyList("work", " ")));
+        Assert.Equal("work copy 3", config.NameOf(config.CopyList("work", "WORK")));
     }
 
     [Fact]
@@ -177,7 +177,7 @@ public class ConfigTests
 
         config.Normalize();
 
-        Assert.Equal("work", config.Decks["d1"]);
+        Assert.Equal(config.ResolveList("work"), config.Decks["d1"]);
         Assert.False(config.Decks.ContainsKey("d2"));
     }
 
@@ -206,21 +206,21 @@ public class ConfigTests
     }
 
     [Fact]
-    public void RenameMovesEntriesDecksAndKeepsOldNameResolving()
+    public void RenameKeepsIdAndOldNamesResolving()
     {
         var config = new AppConfig().Normalize();
-        config.EnsureList("work").Add(new Entry { Target = @"C:.exe" });
-        config.Decks["d1"] = "work";
+        config.EnsureList("work").Add(new Entry { Target = @"C:\a.exe" });
+        var id = config.ResolveList("work");
+        config.Decks["d1"] = id;
 
         Assert.Null(config.RenameList("work", "Office"));
         Assert.Null(config.RenameList("Office", "Desk"));
 
-        Assert.False(config.Lists.ContainsKey("work"));
+        Assert.Equal("Desk", config.NameOf(id));
         Assert.Single(config.GetList("Desk"));
-        Assert.Equal("Desk", config.ResolveList("work"));
-        Assert.Equal("Desk", config.ResolveList("office"));
-        Assert.Single(config.GetList("work"));
-        Assert.Equal("Desk", config.Decks["d1"]);
+        Assert.Equal(id, config.ResolveList("work"));
+        Assert.Equal(id, config.ResolveList("office"));
+        Assert.Equal(id, config.Decks["d1"]);
     }
 
     [Fact]
@@ -233,7 +233,7 @@ public class ConfigTests
         Assert.NotNull(config.RenameList("a", "B"));
         Assert.NotNull(config.RenameList("a", "  "));
         Assert.NotNull(config.RenameList("missing", "x"));
-        Assert.True(config.Lists.ContainsKey("a"));
+        Assert.Equal("a", config.NameOf("a"));
     }
 
     [Fact]
@@ -244,7 +244,7 @@ public class ConfigTests
 
         Assert.Null(config.RenameList("games", "Games"));
 
-        Assert.Contains("Games", config.Lists.Keys);
+        Assert.Equal("Games", config.NameOf("games"));
         Assert.Empty(config.Renames);
     }
 
@@ -255,11 +255,12 @@ public class ConfigTests
         var path = tmp.File("config.json");
         ConfigStore.Update(path, c => { c.EnsureList("work"); c.RenameList("work", "office"); });
 
-        Assert.Equal("office", ConfigStore.Load(path).ResolveList("work"));
-        var config = ConfigStore.Update(path, c => Assert.True(c.AddList("work")));
+        var office = ConfigStore.Load(path).ResolveList("office");
+        Assert.Equal(office, ConfigStore.Load(path).ResolveList("work"));
+        var config = ConfigStore.Update(path, c => Assert.NotNull(c.AddList("work")));
 
         Assert.Empty(config.Renames);
-        Assert.Equal("work", config.ResolveList("work"));
+        Assert.NotEqual(office, config.ResolveList("work"));
     }
 
     [Fact]
@@ -267,14 +268,14 @@ public class ConfigTests
     {
         using var tmp = new TempDir();
         var path = tmp.File("config.json");
-        ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = @"C:.exe" }));
+        ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = @"C:\a.exe" }));
 
         var config = ConfigStore.Update(path, c => Assert.Null(c.RenameList("default", "Main")));
-        config = ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = @"C:.exe" }));
+        config = ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = @"C:\b.exe" }));
         config = ConfigStore.Load(path);
 
-        Assert.Equal(["Main"], config.Lists.Keys);
-        Assert.Equal("Main", config.HomeList);
+        Assert.Equal(["Main"], config.Top.Select(config.NameOf));
+        Assert.Equal("Main", config.NameOf(config.HomeList));
         Assert.Equal(2, config.GetList(null).Count);
     }
 
@@ -293,19 +294,18 @@ public class ConfigTests
     {
         var config = new AppConfig().Normalize();
         config.EnsureList("work");
-        config.ListOptions["work"] = new ListOptions { ReturnAfterLaunch = true };
+        config.UpdateOptions("work", o => o.ReturnAfterLaunch = true);
 
         config.RenameList("work", "office");
         var copy = config.CopyList("office");
-        config.ListOptions["office"].ReturnAfterLaunch = false;
+        config.UpdateOptions("office", o => o.ReturnAfterLaunch = false);
 
         Assert.True(config.OptionsOf("work") is { ReturnAfterLaunch: false });
         Assert.True(config.OptionsOf(copy).ReturnAfterLaunch);
         Assert.False(config.OptionsOf("missing").ReturnAfterLaunch);
 
-        config.Lists.Remove(copy);
-        config.Normalize();
-        Assert.False(config.ListOptions.ContainsKey(copy));
+        Assert.True(config.RemoveList(copy));
+        Assert.False(config.Store.ContainsKey(copy));
     }
 
     [Fact]
@@ -322,7 +322,7 @@ public class ConfigTests
         config.UpdateOptions("work", o => o.ReturnAfterLaunch = false);
         Assert.Equal("work.ico", config.OptionsOf("work").Icon);
         config.UpdateOptions("work", o => o.Icon = null);
-        Assert.False(config.ListOptions.ContainsKey("work"));
+        Assert.Null(config.Store[config.ResolveList("work")].Options);
     }
 
     [Fact]
@@ -333,7 +333,7 @@ public class ConfigTests
         ConfigStore.Save(path, new AppConfig());
 
         await Task.WhenAll(Enumerable.Range(0, 20).Select(i => Task.Run(
-            () => ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = $@"C:pp{i}.exe" })),
+            () => ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = $@"C:\app{i}.exe" })),
             TestContext.Current.CancellationToken)));
 
         Assert.Equal(20, ConfigStore.Load(path).GetList(null).Count);
@@ -344,12 +344,12 @@ public class ConfigTests
     {
         using var tmp = new TempDir();
         var path = tmp.File("config.json");
-        ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = @"C:.exe" }));
+        ConfigStore.Update(path, c => c.Insert(null, new Entry { Target = @"C:\a.exe" }));
         var before = File.ReadAllText(path);
 
         Assert.Throws<InvalidOperationException>(() => ConfigStore.Update(path, c =>
         {
-            c.Lists.Clear();
+            c.Store.Clear();
             throw new InvalidOperationException();
         }));
 
