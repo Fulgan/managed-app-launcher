@@ -176,20 +176,27 @@ public static class KeyRenderer
 
     /// <summary>Next-page key: a right chevron above the page indicator.</summary>
     /// <param name="page">Zero-based page shown.</param>
-    public static byte[] RenderNextPagePng(int page, int pages) => Png(IconArt.NextPageKey(page, pages));
+    public static byte[] RenderNextPagePng(int page, int pages, KeyTheme theme = KeyTheme.Grey) => Png(IconArt.NextPageKey(page, pages, theme: theme));
 
-    /// <summary>Back key: a U-turn arrow, returning to the profile the launcher was opened from.</summary>
-    public static byte[] RenderBackPng() => Png(IconArt.ControlKey(Glyph.Return));
+    /// <summary>Previous-page arrow: left chevron above the same page indicator.</summary>
+    public static byte[] RenderPreviousPagePng(int page, int pages, KeyTheme theme = KeyTheme.Grey) => Png(IconArt.NextPageKey(page, pages, previous: true, theme));
+
+    /// <summary>Back key: an arrow going right then up, one layer up to the profile the launcher was opened from.</summary>
+    public static byte[] RenderBackPng(KeyTheme theme = KeyTheme.Grey) => Png(IconArt.ControlKey(Glyph.Return, theme: theme));
 
     /// <summary>Open Launcher key labelled with its list.</summary>
     public static byte[] RenderOpenPng(string list) => Png(IconArt.OpenKey(list));
 
-    public static byte[] RenderOpenPng(string list, Glyph glyph) => Png(IconArt.OpenKey(list, glyph));
+    public static byte[] RenderOpenPng(string list, Glyph glyph, bool link = false, KeyTheme theme = KeyTheme.Grey) => Png(IconArt.OpenKey(list, glyph, link, theme));
 
-    public static byte[] RenderOpenPng(string list, Image? icon)
+    /// <summary>Up key: an arrow up, leaving a folder for the list holding it.</summary>
+    public static byte[] RenderUpPng(KeyTheme theme = KeyTheme.Grey) => Png(IconArt.ControlKey(Glyph.Up, theme: theme));
+
+    /// <param name="link">Adds the link badge, for a key that opens another list without owning it.</param>
+    public static byte[] RenderOpenPng(string list, Image? icon, bool link = false)
     {
         if (icon is null)
-            return RenderOpenPng(list);
+            return RenderOpenPng(list, Glyph.Launcher, link);
         var canvas = new Bitmap(Size, Size, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(canvas))
         {
@@ -199,12 +206,17 @@ public static class KeyRenderer
             g.Clear(Color.Black);
             DrawIcon(g, icon, new PointF(Size / 2f, OpenIconCenterY), OpenIconFrame);
             IconArt.DrawListLabel(g, list);
+            if (link)
+                IconArt.DrawLinkBadge(g);
         }
         return Png(canvas);
     }
 
     /// <summary>Manage key: a gear, opening the manager window.</summary>
-    public static byte[] RenderManagePng() => Png(IconArt.ControlKey(Glyph.Gear));
+    public static byte[] RenderManagePng(KeyTheme theme = KeyTheme.Grey) => Png(IconArt.ControlKey(Glyph.Gear, theme: theme));
+
+    /// <summary>Auto List key in a theme colour; the grey one ships as the action's key image.</summary>
+    public static byte[] RenderAutoListPng(KeyTheme theme) => Png(IconArt.ControlKey(Glyph.List, theme: theme));
 
     /// <summary>Encodes and disposes the bitmap.</summary>
     public static byte[] Png(Bitmap bitmap)

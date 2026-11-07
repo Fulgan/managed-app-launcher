@@ -72,7 +72,9 @@ public class ManifestTests
     [InlineData("thumbnail.png", 1920, 960)]
     public void ListingArtHasMarketplaceSizes(string file, int width, int height)
     {
-        using var image = new System.Drawing.Bitmap(RepoFile("marketplace", file));
+        var path = RepoFile("marketplace", file);
+        Assert.SkipUnless(File.Exists(path), "listing art is kept out of the public repository");
+        using var image = new System.Drawing.Bitmap(path);
 
         Assert.Equal(new System.Drawing.Size(width, height), image.Size);
     }

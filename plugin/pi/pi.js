@@ -228,15 +228,17 @@ function applyEntry(entry) {
   saveSettings();
 }
 
+// Choices are plain names or lists {id, name, depth}; folders are indented under their list.
 function fillPresets(select, presets) {
   const current = select.value;
   const keep = Array.from(select.options).filter((o) => o.dataset.fixed !== undefined);
   select.replaceChildren(...keep);
-  for (const name of presets || []) {
-    if (keep.some((o) => o.value === name)) continue;
+  for (const preset of presets || []) {
+    const value = typeof preset === "string" ? preset : preset.id;
+    if (keep.some((o) => o.value === value)) continue;
     const option = document.createElement("option");
-    option.value = name;
-    option.textContent = name;
+    option.value = value;
+    option.textContent = typeof preset === "string" ? preset : "   ".repeat(preset.depth - 1) + preset.name;
     select.appendChild(option);
   }
   select.value = settings[select.dataset.key] || current;

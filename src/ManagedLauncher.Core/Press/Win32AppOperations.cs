@@ -36,6 +36,13 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
     /// A shortcut is launched as-is so Explorer applies its arguments and working directory. When the preset adds
     /// arguments or a working directory, the shortcut's exe is started directly with both combined.
     /// </summary>
+    /// <summary>
+    /// Windows PowerShell, which runs <c>.ps1</c> targets: opened directly, Windows would edit the script instead. The
+    /// execution policy is left as the user set it.
+    /// </summary>
+    internal static readonly string WindowsPowerShell =
+        Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+
     internal static ProcessStartInfo BuildStartInfo(ResolvedTarget target, LaunchOptions options, bool elevated)
     {
         string file;
@@ -53,6 +60,11 @@ public sealed class Win32AppOperations(Action<string>? log = null) : IAppOperati
             file = target.LaunchFile ?? throw new InvalidOperationException("target has no launch file");
             if (target.Kind is not (TargetKind.Lnk or TargetKind.Url))
                 workDir ??= Path.GetDirectoryName(file);
+            if (target.Kind == TargetKind.Exe && file.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase))
+            {
+                args = string.Join(' ', new[] { $"-NoProfile -File \"{file}\"", args }.Where(a => !string.IsNullOrWhiteSpace(a)));
+                file = WindowsPowerShell;
+            }
         }
 
         var info = new ProcessStartInfo(file)

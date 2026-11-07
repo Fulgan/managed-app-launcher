@@ -126,12 +126,22 @@ public class LayoutTests
     {
         var layout = new LauncherLayout(15, 14, hasBack: true);
 
+        Assert.Equal(new KeyAssignment(KeyRole.App, 13, 1, 2), layout.Assign(0, 1));
+        Assert.Equal(KeyRole.Manage, layout.Assign(13, 1).Role);
+    }
+
+    [Fact]
+    public void BackOnEveryPageWhenListAsks()
+    {
+        var layout = new LauncherLayout(15, 15, Enumerable.Repeat(ListItemKind.App, 14).ToList(), hasBack: true, leadOnEveryPage: true);
+
         Assert.True(layout.HasNextPage);
         Assert.Equal(2, layout.PageCount);
         Assert.Equal(KeyRole.Back, layout.Assign(0, 0).Role);
         Assert.Equal(new KeyAssignment(KeyRole.App, 12, 0, 2), layout.Assign(13, 0));
         Assert.Equal(KeyRole.NextPage, layout.Assign(14, 0).Role);
-        Assert.Equal(new KeyAssignment(KeyRole.App, 13, 1, 2), layout.Assign(0, 1));
+        Assert.Equal(KeyRole.Back, layout.Assign(0, 1).Role);
+        Assert.Equal(new KeyAssignment(KeyRole.App, 13, 1, 2), layout.Assign(1, 1));
         Assert.Equal(KeyRole.Manage, layout.Assign(13, 1).Role);
         Assert.Equal(KeyRole.Empty, layout.Assign(5, 1).Role);
     }
@@ -203,5 +213,78 @@ public class LayoutTests
 
         Assert.True(layout.HasNextPage);
         Assert.Equal(new KeyAssignment(KeyRole.App, 13, 1, 2), layout.Assign(0, 1));
+    }
+
+    private static LauncherLayout Arrows(int apps, bool back = false, IReadOnlyList<ListItemKind>? items = null) =>
+        new(15, 5, items ?? Enumerable.Repeat(ListItemKind.App, apps).ToList(), back, KeyRole.Back, Core.Config.Navigation.Arrows);
+
+    [Fact]
+    public void ArrowsOnlyWhenMoreThanOnePage()
+    {
+        var layout = Arrows(14);
+
+        Assert.Equal(1, layout.PageCount);
+        Assert.False(layout.HasArrows);
+        Assert.Equal(KeyRole.App, layout.Assign(10, 0).Role);
+        Assert.Equal(KeyRole.Manage, layout.Assign(14, 0).Role);
+    }
+
+    [Fact]
+    public void ArrowsLeaveOutPreviousOnFirstPageAndNextOnLastPage()
+    {
+        var layout = Arrows(20);
+
+        Assert.True(layout.HasArrows);
+        Assert.False(layout.HasNextPage);
+        Assert.Equal(2, layout.PageCount);
+        Assert.Equal(new KeyAssignment(KeyRole.App, 10, 0, 2), layout.Assign(10, 0));
+        Assert.Equal(KeyRole.NextPage, layout.Assign(14, 0).Role);
+        Assert.Equal(new KeyAssignment(KeyRole.App, 14, 1, 2), layout.Assign(0, 1));
+        Assert.Equal(KeyRole.PreviousPage, layout.Assign(10, 1).Role);
+        Assert.Equal(KeyRole.Manage, layout.Assign(14, 1).Role);
+    }
+
+    [Fact]
+    public void MiddlePagesHaveBothArrowsAndLastPageUsesFreedKey()
+    {
+        var layout = Arrows(40);
+
+        Assert.Equal(3, layout.PageCount);
+        Assert.Equal(KeyRole.PreviousPage, layout.Assign(10, 1).Role);
+        Assert.Equal(KeyRole.NextPage, layout.Assign(14, 1).Role);
+        Assert.Equal(new KeyAssignment(KeyRole.App, 26, 1, 3), layout.Assign(13, 1));
+        Assert.Equal(new KeyAssignment(KeyRole.App, 39, 2, 3), layout.Assign(13, 2));
+        Assert.Equal(KeyRole.Manage, layout.Assign(14, 2).Role);
+        Assert.Equal(2, layout.Advance(2, +1));
+        Assert.Equal(0, layout.Advance(0, -1));
+    }
+
+    [Fact]
+    public void ArrowsKeepBackOnFirstKeyAndRowBreaksSkipPreviousKey()
+    {
+        var layout = new LauncherLayout(15, 5, (IReadOnlyList<ListItemKind>)
+        [
+            .. Enumerable.Repeat(ListItemKind.App, 14),
+            ListItemKind.RowBreak,
+            ListItemKind.App,
+            ListItemKind.RowBreak,
+            ListItemKind.App,
+        ], hasBack: true, navigation: Core.Config.Navigation.Arrows, leadOnEveryPage: true);
+
+        Assert.Equal(KeyRole.Back, layout.Assign(0, 0).Role);
+        Assert.Equal(KeyRole.Back, layout.Assign(0, 1).Role);
+        Assert.Equal(new KeyAssignment(KeyRole.App, 13, 1, 2), layout.Assign(1, 1));
+        Assert.Equal(new KeyAssignment(KeyRole.App, 15, 1, 2), layout.Assign(5, 1));
+        Assert.Equal(KeyRole.PreviousPage, layout.Assign(10, 1).Role);
+        Assert.Equal(new KeyAssignment(KeyRole.App, 17, 1, 2), layout.Assign(11, 1));
+    }
+
+    [Fact]
+    public void SingleRowDeviceFallsBackToCarousel()
+    {
+        var layout = new LauncherLayout(4, 4, Enumerable.Repeat(ListItemKind.App, 9).ToList(), navigation: Core.Config.Navigation.Arrows);
+
+        Assert.False(layout.HasArrows);
+        Assert.True(layout.HasNextPage);
     }
 }

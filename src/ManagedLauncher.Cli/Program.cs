@@ -13,19 +13,23 @@ internal static class Program
     private const string Usage = """
         usage: malaunch <command>
 
-          pin <path|AUMID> [--list name] [--at n] [--title t] [--notify]
-          break row|page [--list name] [--at n]
-          unpin <index> [--list name]
-          move <from> <to> [--list name]
-          list [--list name]
-          lists | lists add <name> | lists rm <name> | lists rename <old> <new>
-          set <index> [--list name] [--args a] [--workdir d] [--admin|--no-admin]
+          pin <path|AUMID> [--list l] [--at n] [--title t] [--notify]
+          break row|page [--list l] [--at n]
+          folder <name> [--list l] [--at n]
+                 [--auto steam|startmenu|running|directory] [--path dir] [--types exe,lnk,symlink,bat]
+          link <list> [--list l] [--at n] [--title t]
+          unpin <index> [--list l]
+          move <from> <to> [--list l]
+          list [--list l]
+          lists | lists add <name> | lists rm <list> | lists rename <list> <new name>
+          set <index> [--list l] [--args a] [--workdir d] [--admin|--no-admin]
                       [--on-running auto|focus|relaunch|none] [--kill-mode all|newest]
                       [--indicator border|dot] [--long-press auto|none]
           import <profile uuid|name> [--list name] [--append] [--dry-run]
           page --out file [--name n] [--device model] [--size CxR]
           shell install|uninstall
 
+        lists are named by their path from the top, e.g. Games/Steam, or by id
         config: %APPDATA%\ManagedAppLauncher\config.json
         """;
 
@@ -45,6 +49,8 @@ internal static class Program
             {
                 "pin" => Pin(new CommandLine(args.Skip(1), "notify")),
                 "break" => Break(new CommandLine(args.Skip(1))),
+                "folder" => Folder(new CommandLine(args.Skip(1))),
+                "link" => Link(new CommandLine(args.Skip(1))),
                 "unpin" => Unpin(new CommandLine(args.Skip(1))),
                 "move" => Move(new CommandLine(args.Skip(1))),
                 "list" => List(new CommandLine(args.Skip(1))),
@@ -76,7 +82,7 @@ internal static class Program
         var resolved = TargetResolver.Resolve(plan.Entry);
         var at = cl.GetInt("at");
         var index = -1;
-        ConfigStore.Update(AppPaths.ConfigFile, c => index = c.Insert(cl.Get("list"), plan.Entry, at));
+        ConfigStore.Update(AppPaths.ConfigFile, c => index = c.Insert(ListArg(c, cl), plan.Entry, at));
 
         var lines = new List<string> { $"pinned {plan.Entry.Title ?? Path.GetFileNameWithoutExtension(plan.Entry.Target)} at {index}" };
         if (!resolved.IsLaunchable)
@@ -106,18 +112,87 @@ internal static class Program
             var other => throw new UsageException($"unknown break '{other}', use row or page"),
         };
         var index = -1;
-        ConfigStore.Update(AppPaths.ConfigFile, c => index = c.Insert(cl.Get("list"), new Entry { Break = kind }, cl.GetInt("at")));
+        ConfigStore.Update(AppPaths.ConfigFile, c => index = c.Insert(ListArg(c, cl), new Entry { Break = kind }, cl.GetInt("at")));
         Console.WriteLine(index);
         return 0;
     }
+
+    private static int Folder(CommandLine cl)
+    {
+        var name = cl.Arg(0, "folder name");
+        var source = AutoSource(cl);
+        var index = -1;
+        ConfigStore.Update(AppPaths.ConfigFile, c =>
+        {
+            var parent = ExistingList(c, cl.Get("list"));
+            var problem = source is null
+                ? c.AddFolder(parent, name, out _, out index, cl.GetInt("at"))
+                : c.AddAutoFolder(parent, name, source, out _, out index, cl.GetInt("at"));
+            if (problem is not null)
+                throw new UsageException(problem);
+        });
+        Console.WriteLine(index);
+        return 0;
+    }
+
+    /// <summary>The auto-folder source given by <c>--auto</c>, <c>--path</c> and <c>--types</c>; null for a plain folder.</summary>
+    private static ListSource? AutoSource(CommandLine cl)
+    {
+        if (cl.Get("auto") is not { } auto)
+            return cl.Has("path") || cl.Has("types") ? throw new UsageException("--path and --types need --auto directory") : null;
+        var type = auto.ToLowerInvariant() switch
+        {
+            "steam" => SourceType.Steam,
+            "startmenu" => SourceType.StartMenu,
+            "running" => SourceType.Running,
+            "directory" => SourceType.Directory,
+            _ => throw new UsageException("--auto: steam|startmenu|running|directory"),
+        };
+        var path = cl.Get("path");
+        if (type == SourceType.Directory && string.IsNullOrWhiteSpace(path))
+            throw new UsageException("--auto directory needs --path");
+        var types = cl.Get("types")?.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(t => t.ToLowerInvariant()).ToList();
+        if (types?.FirstOrDefault(t => !AutoFolders.AllTypes.Contains(t)) is { } unknown)
+            throw new UsageException($"unknown type '{unknown}', use {string.Join(",", AutoFolders.AllTypes)}");
+        return type == SourceType.Directory
+            ? new ListSource { Type = type, Path = path!.Contains('%') ? path : Path.GetFullPath(path), Types = types }
+            : new ListSource { Type = type };
+    }
+
+    private static int Link(CommandLine cl)
+    {
+        var target = cl.Arg(0, "list to open");
+        var index = -1;
+        ConfigStore.Update(AppPaths.ConfigFile, c =>
+        {
+            if (c.AddLink(ExistingList(c, cl.Get("list")), ExistingList(c, target), out index, cl.GetInt("at"), cl.Get("title")) is { } problem)
+                throw new UsageException(problem);
+        });
+        Console.WriteLine(index);
+        return 0;
+    }
+
+    /// <summary>The <c>--list</c> option; a plain name that matches no list creates a top-level list, a path must exist.</summary>
+    private static string? ListArg(AppConfig config, CommandLine cl)
+    {
+        var list = cl.Get("list");
+        return list is not null && (list.Contains('/') || config.Exists(list)) ? EditableList(config, list) : list;
+    }
+
+    private static string ExistingList(AppConfig config, string? list) =>
+        config.Exists(list) ? config.ResolveList(list) : throw new UsageException($"no list '{list}'");
+
+    /// <summary>A list whose items can be edited: existing and not an auto-folder.</summary>
+    private static string EditableList(AppConfig config, string? list) =>
+        config.IsDynamic(ExistingList(config, list)) ? throw new UsageException(AppConfig.FillsItself) : config.ResolveList(list);
 
     private static int Unpin(CommandLine cl)
     {
         var index = Index(cl.Arg(0, "index"));
         var removed = false;
-        ConfigStore.Update(AppPaths.ConfigFile, c => removed = c.Remove(cl.Get("list"), index));
+        ConfigStore.Update(AppPaths.ConfigFile, c => removed = c.Remove(EditableList(c, cl.Get("list")), index));
         if (!removed)
-            Console.Error.WriteLine($"no app at {index}");
+            Console.Error.WriteLine($"no item at {index}");
         return removed ? 0 : 1;
     }
 
@@ -126,7 +201,7 @@ internal static class Program
         var from = Index(cl.Arg(0, "from"));
         var to = Index(cl.Arg(1, "to"));
         var moved = false;
-        ConfigStore.Update(AppPaths.ConfigFile, c => moved = c.Move(cl.Get("list"), from, to));
+        ConfigStore.Update(AppPaths.ConfigFile, c => moved = c.Move(EditableList(c, cl.Get("list")), from, to));
         if (!moved)
             Console.Error.WriteLine($"can't move {from} to {to}");
         return moved ? 0 : 1;
@@ -135,9 +210,13 @@ internal static class Program
     private static int List(CommandLine cl)
     {
         var config = ConfigStore.Load(AppPaths.ConfigFile);
-        var rows = config.GetList(cl.Get("list"))
+        var listId = ExistingList(config, cl.Get("list"));
+        var items = config.IsDynamic(listId) ? config.Generate(listId, new SystemAppSources()) : config.GetList(listId);
+        var rows = items
             .Select((e, i) => e.Break is { } b
                 ? [i.ToString(), $"--- {b.ToString().ToLowerInvariant()} break ---", "", "", ""]
+                : e.Opens is { } opens
+                ? [i.ToString(), config.TitleOf(e), e.IsFolder ? "folder" : "link", config.PathOf(opens), e.LinkProblem ?? ""]
                 : new[]
                 {
                     i.ToString(),
@@ -148,8 +227,6 @@ internal static class Program
                 })
             .ToList();
         Table(["index", "title", "kind", "target", "problem"], rows);
-        Console.WriteLine();
-        Console.WriteLine($"lists: {string.Join(", ", config.Lists.Keys.Order())}");
         return 0;
     }
 
@@ -158,31 +235,39 @@ internal static class Program
         if (cl.Positional.Count == 0)
         {
             var config = ConfigStore.Load(AppPaths.ConfigFile);
-            Table(["list", "apps"], config.Lists.OrderBy(l => l.Key).Select(l => new[] { l.Key, l.Value.Count.ToString() }).ToList());
+            Table(["list", "items", "id"], config.Tree()
+                .Select(t => new[] { new string(' ', (t.Depth - 1) * 2) + config.NameOf(t.Id), config.GetList(t.Id).Count.ToString(), t.Id })
+                .ToList());
             return 0;
         }
-        var name = cl.Arg(1, "list name");
+        var name = cl.Arg(1, "list");
         switch (cl.Arg(0, "add|rm|rename").ToLowerInvariant())
         {
             case "add":
-                var added = false;
+                string? added = null;
                 ConfigStore.Update(AppPaths.ConfigFile, c => added = c.AddList(name));
-                return added ? 0 : 1;
+                if (added is null)
+                    Console.Error.WriteLine($"a list named '{name}' already exists");
+                return added is null ? 1 : 0;
             case "rm":
-                if (string.Equals(name, ConfigStore.Load(AppPaths.ConfigFile).HomeList, StringComparison.OrdinalIgnoreCase))
-                    throw new UsageException($"'{name}' is the home list (shown when a key names no list) and can't be removed");
-                var removed = false;
-                ConfigStore.Update(AppPaths.ConfigFile, c => removed = c.Lists.Remove(name));
-                return removed ? 0 : 1;
+                ConfigStore.Update(AppPaths.ConfigFile, c =>
+                {
+                    var id = ExistingList(c, name);
+                    if (id == c.HomeList)
+                        throw new UsageException($"'{c.NameOf(id)}' is the home list (shown when a key names no list) and can't be removed");
+                    c.RemoveList(id);
+                });
+                return 0;
             case "rename":
                 var to = cl.Arg(2, "new name");
-                string? error = null;
-                ConfigStore.Update(AppPaths.ConfigFile, c => error = c.RenameList(name, to));
-                if (error is not null)
-                    throw new UsageException(error);
+                ConfigStore.Update(AppPaths.ConfigFile, c =>
+                {
+                    if (c.RenameList(ExistingList(c, name), to) is { } error)
+                        throw new UsageException(error);
+                });
                 return 0;
             default:
-                throw new UsageException("lists add|rm <name> | lists rename <old> <new>");
+                throw new UsageException("lists add <name> | lists rm <list> | lists rename <list> <new name>");
         }
     }
 
@@ -193,7 +278,7 @@ internal static class Program
         var found = false;
         ConfigStore.Update(AppPaths.ConfigFile, c =>
         {
-            if (c.GetApp(cl.Get("list"), index) is not { } e)
+            if (c.GetApp(EditableList(c, cl.Get("list")), index) is not { } e)
                 return;
             found = true;
             if (cl.Has("args")) e.Args = Blank(cl.Get("args"));
@@ -239,7 +324,7 @@ internal static class Program
         }
         ConfigStore.Update(AppPaths.ConfigFile, c =>
         {
-            var list = c.EnsureList(cl.Get("list"));
+            var list = c.EnsureList(ListArg(c, cl));
             if (!append)
                 list.Clear();
             list.AddRange(imported);

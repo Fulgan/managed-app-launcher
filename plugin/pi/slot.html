@@ -32,9 +32,12 @@
       if (info.slot !== null && info.slot !== undefined) {
         lines.push(`fixed: always app <code>${info.slot}</code>`);
       } else {
-        lines.push(`paged: list <code>${escapeHtml(info.list)}</code>, page <code>${info.page}/${info.pages}</code>, ${info.apps} apps`);
+        lines.push(`paged: list <code>${escapeHtml(info.listName)}</code>, page <code>${info.page}/${info.pages}</code>, ${info.apps} items`);
       }
-      if (info.role === "nextpage") lines.push("next-page key — press: next, hold: previous");
+      if (info.role === "nextpage") lines.push("next-page key — press: next, hold: previous (arrows: last page)");
+      else if (info.role === "previouspage") lines.push("previous-page key — press: previous, hold: first page");
+      else if (info.role === "up") lines.push("up key — back to the list holding this folder");
+      else if (info.opens) lines.push(`${info.opens.kind} <code>${escapeHtml(info.opens.name)}</code>${info.opens.problem ? ` <span class="error">${escapeHtml(info.opens.problem)}</span>` : ""}`);
       else if (info.entry) lines.push(`app <code>${info.appIndex}</code>: <code>${escapeHtml(info.entry.title || info.entry.target)}</code>`);
       else lines.push("empty — add apps with <code>malaunch pin &lt;path&gt;</code>");
       lines.push(describe(info));

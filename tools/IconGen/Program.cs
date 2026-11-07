@@ -15,10 +15,12 @@ Pair("action-open", 20, size => IconArt.Monochrome(Glyph.Launcher, size));
 Pair("action-manage", 20, size => IconArt.Monochrome(Glyph.Gear, size));
 Pair("action-slot", 20, size => IconArt.Monochrome(Glyph.Slot, size));
 Pair("action-launch", 20, size => IconArt.Monochrome(Glyph.Play, size));
+Pair("action-auto", 20, size => IconArt.Monochrome(Glyph.List, size));
 Key("key-open", () => IconArt.OpenKey(null));
 Key("key-manage", () => IconArt.ControlKey(Glyph.Gear));
 Key("key-launch", () => IconArt.ControlKey(Glyph.Play));
 Key("key-slot", () => IconArt.ControlKey(Glyph.Plus, placeholder: true));
+Key("key-auto", () => IconArt.ControlKey(Glyph.List));
 WriteIco(Path.Combine(root, "src", "ManagedLauncher.Manager", "app.ico"), [16, 20, 24, 32, 40, 48, 64, 128, 256]);
 
 // Marketplace listing art: uploaded in Maker Console, not packaged with the plugin.

@@ -46,15 +46,27 @@
                 <Grid MinHeight="22">
                   <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                   </Grid.ColumnDefinitions>
-                  <Border x:Name="drop" Grid.ColumnSpan="3" Margin="-10,-7" CornerRadius="10" BorderThickness="2"
+                  <Border x:Name="drop" Grid.ColumnSpan="4" Margin="-10,-7" CornerRadius="10" BorderThickness="2"
                           BorderBrush="{StaticResource Accent}" Visibility="Collapsed" />
-                  <TextBlock Text="&#xE8FD;" FontFamily="{StaticResource Glyphs}" FontSize="14" Margin="0,1,10,0" VerticalAlignment="Center" />
-                  <TextBlock x:Name="name" Grid.Column="1" Text="{Binding Name}" ToolTip="{Binding Name}" FontSize="14" VerticalAlignment="Center"
+                  <Button x:Name="chevron" Margin="{Binding Indent}" Content="{Binding Chevron}" FontFamily="{StaticResource Glyphs}" FontSize="9"
+                          Foreground="{StaticResource Muted}" Background="Transparent" BorderThickness="0" Cursor="Hand" Padding="2,4"
+                          Width="18" Focusable="False" Click="ToggleExpand_Click" AutomationProperties.Name="Show folders">
+                    <Button.Template>
+                      <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                      </ControlTemplate>
+                    </Button.Template>
+                  </Button>
+                  <TextBlock Grid.Column="1" Text="{Binding Glyph}" FontFamily="{StaticResource Glyphs}" FontSize="14" Margin="2,1,10,0" VerticalAlignment="Center" />
+                  <TextBlock x:Name="name" Grid.Column="2" Text="{Binding Name}" ToolTip="{Binding Name}" FontSize="14" VerticalAlignment="Center"
                              TextTrimming="CharacterEllipsis" />
-                  <Border x:Name="editor" Grid.Column="1" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#40000000"
+                  <Border x:Name="editor" Grid.Column="2" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#40000000"
                           CornerRadius="6" BorderThickness="1.5" BorderBrush="#80FFFFFF" Margin="-4,-3" Padding="4,2"
                           ToolTip="{Binding Error}">
                     <TextBox Style="{StaticResource Inline}" Text="{Binding Draft, UpdateSourceTrigger=PropertyChanged}"
@@ -62,7 +74,7 @@
                              IsVisibleChanged="ListName_IsVisibleChanged" TextChanged="ListName_TextChanged"
                              KeyDown="ListName_KeyDown" LostKeyboardFocus="ListName_LostKeyboardFocus" />
                   </Border>
-                  <Button x:Name="pencil" Grid.Column="2" Content="&#xE70F;" FontFamily="{StaticResource Glyphs}" FontSize="12"
+                  <Button x:Name="pencil" Grid.Column="3" Content="&#xE70F;" FontFamily="{StaticResource Glyphs}" FontSize="12"
                           Foreground="White" Background="Transparent" BorderThickness="0" Cursor="Hand" Padding="6,2"
                           Margin="6,0,-4,0" Visibility="Collapsed" Click="RenameList_Click" Focusable="False"
                           ToolTip="Rename (F2)" AutomationProperties.Name="Rename list">
@@ -90,6 +102,9 @@
                   <DataTrigger Binding="{Binding IsDropTarget}" Value="True">
                     <Setter TargetName="drop" Property="Visibility" Value="Visible" />
                   </DataTrigger>
+                  <DataTrigger Binding="{Binding HasChildren}" Value="False">
+                    <Setter TargetName="chevron" Property="Visibility" Value="Hidden" />
+                  </DataTrigger>
                 </DataTemplate.Triggers>
               </DataTemplate>
             </ListBox.ItemTemplate>
@@ -105,13 +120,43 @@
             <ColumnDefinition Width="Auto" />
           </Grid.ColumnDefinitions>
           <StackPanel>
+            <TextBlock x:Name="ParentText" Style="{StaticResource Footnote}" Visibility="Collapsed" Margin="0,0,0,2" />
             <TextBlock x:Name="ListTitle" Style="{StaticResource LargeTitle}" />
             <TextBlock x:Name="PagesText" Style="{StaticResource Footnote}" Margin="0,2,0,0" />
             <CheckBox x:Name="ReturnAfterLaunchBox" Style="{StaticResource Switch}" Content="Return after launch" Margin="0,8,0,0"
-                      HorizontalAlignment="Left" Checked="ReturnAfterLaunch_Changed" Unchecked="ReturnAfterLaunch_Changed"
-                      ToolTip="After a launch, the deck returns to the previous profile, or to the first page" />
-            <Button Style="{StaticResource Plain}" Click="ListIcon_Click" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="6,4"
-                    ToolTip="Icon of this list's Open Launcher keys">
+                      HorizontalAlignment="Left" Checked="ReturnAfterLaunch_Changed" Unchecked="ReturnAfterLaunch_Changed" />
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+              <TextBlock Text="Page keys" FontSize="13" VerticalAlignment="Center" Margin="0,0,10,0" />
+              <ComboBox x:Name="NavigationBox" SelectionChanged="Navigation_Changed" MinWidth="200"
+                        ToolTip="How the deck turns pages when this list needs more than one" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+              <TextBlock Text="Key color" FontSize="13" VerticalAlignment="Center" Margin="0,0,10,0" />
+              <ComboBox x:Name="ThemeBox" SelectionChanged="Theme_Changed" MinWidth="200"
+                        ToolTip="Color of the Back, Up, page, Manage and folder keys of this list" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+              <TextBlock Text="Back key" FontSize="13" VerticalAlignment="Center" Margin="0,0,10,0" />
+              <ComboBox x:Name="BackBox" SelectionChanged="Back_Changed" MinWidth="200"
+                        ToolTip="Where the Back or Up key sits when this list needs more than one page" />
+            </StackPanel>
+            <StackPanel x:Name="SourcePanel" Orientation="Horizontal" Margin="0,8,0,0" Visibility="Collapsed">
+              <TextBlock x:Name="SourceText" FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="380" />
+              <Button x:Name="SourceButton" Style="{StaticResource Plain}" Click="OpenMenu_Click" Margin="10,0,0,0" Padding="6,4"
+                      Content="Change…" AutomationProperties.Name="Change auto folder source">
+                <Button.ContextMenu>
+                  <ContextMenu Placement="Bottom">
+                    <MenuItem Header="Directory…" Click="SourceDirectory_Click" />
+                    <Separator />
+                    <MenuItem x:Name="TypeExe" Header="Programs (.exe)" IsCheckable="True" Tag="exe" Click="SourceType_Click" />
+                    <MenuItem x:Name="TypeLnk" Header="Shortcuts (.lnk)" IsCheckable="True" Tag="lnk" Click="SourceType_Click" />
+                    <MenuItem x:Name="TypeSymlink" Header="Symbolic links" IsCheckable="True" Tag="symlink" Click="SourceType_Click" />
+                    <MenuItem x:Name="TypeBat" Header="Scripts (.bat, .cmd, .ps1)" IsCheckable="True" Tag="bat" Click="SourceType_Click" />
+                  </ContextMenu>
+                </Button.ContextMenu>
+              </Button>
+            </StackPanel>
+            <Button x:Name="ListIconButton" Style="{StaticResource Plain}" Click="ListIcon_Click" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="6,4">
               <StackPanel Orientation="Horizontal">
                 <Image x:Name="OpenKeyPreview" Width="36" Height="36" Margin="0,0,8,0" />
                 <TextBlock Text="Set a custom icon…" VerticalAlignment="Center" />
@@ -125,7 +170,7 @@
           </StackPanel>
         </Grid>
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,12,0,0">
-          <Button Style="{StaticResource Filled}" Click="OpenMenu_Click" AutomationProperties.Name="Add app">
+          <Button x:Name="AddAppButton" Style="{StaticResource Filled}" Click="OpenMenu_Click" AutomationProperties.Name="Add app">
             <Button.ContextMenu>
               <ContextMenu Placement="Top">
                 <MenuItem Header="From Start menu…" Click="AddStartMenu_Click" />
@@ -139,23 +184,32 @@
               <TextBlock Text="Add app" Foreground="White" />
             </StackPanel>
           </Button>
-          <Button Click="OpenMenu_Click" AutomationProperties.Name="Add separator">
+          <Button x:Name="InsertButton" Click="OpenMenu_Click" AutomationProperties.Name="Insert">
             <Button.ContextMenu>
-              <ContextMenu Placement="Top">
+              <ContextMenu Placement="Top" Opened="InsertMenu_Opened">
+                <MenuItem Header="Folder" InputGestureText="a list inside this one" Click="AddFolder_Click" />
+                <MenuItem Header="Auto folder">
+                  <MenuItem Header="Steam games" Tag="steam" Click="AddAutoFolder_Click" />
+                  <MenuItem Header="Directory…" Tag="directory" Click="AddAutoFolder_Click" />
+                  <MenuItem Header="Start menu" Tag="startMenu" Click="AddAutoFolder_Click" />
+                  <MenuItem Header="Running programs" Tag="running" Click="AddAutoFolder_Click" />
+                </MenuItem>
+                <MenuItem x:Name="LinkMenu" Header="Link to list" />
+                <Separator />
                 <MenuItem Header="Row break" InputGestureText="next app on a new row" Click="AddRowBreak_Click" />
                 <MenuItem Header="Page break" InputGestureText="next app on a new page" Click="AddPageBreak_Click" />
               </ContextMenu>
             </Button.ContextMenu>
             <StackPanel Orientation="Horizontal">
               <TextBlock Text="&#xE710;" FontFamily="{StaticResource Glyphs}" FontSize="11" Margin="0,1,8,0" VerticalAlignment="Center" />
-              <TextBlock Text="Add separator" />
+              <TextBlock Text="Insert" />
             </StackPanel>
           </Button>
         </StackPanel>
         <Border Style="{StaticResource Card}" Padding="0,6">
           <Grid>
             <ListBox x:Name="AppsBox" AllowDrop="True" SelectionMode="Single" ItemContainerStyle="{StaticResource CardItem}"
-                     SelectionChanged="AppsBox_SelectionChanged" KeyDown="AppsBox_KeyDown"
+                     SelectionChanged="AppsBox_SelectionChanged" KeyDown="AppsBox_KeyDown" MouseDoubleClick="AppsBox_MouseDoubleClick"
                      PreviewMouseLeftButtonDown="AppsBox_PreviewMouseLeftButtonDown" PreviewMouseLeftButtonUp="AppsBox_PreviewMouseLeftButtonUp"
                      PreviewMouseMove="AppsBox_PreviewMouseMove"
                      DragOver="AppsBox_DragOver" DragLeave="AppsBox_DragLeave" Drop="AppsBox_Drop"
@@ -163,6 +217,15 @@
               <ListBox.ItemTemplate>
                 <DataTemplate>
                   <Grid>
+                    <Grid.Style>
+                      <Style TargetType="Grid">
+                        <Style.Triggers>
+                          <DataTrigger Binding="{Binding IsHidden}" Value="True">
+                            <Setter Property="Opacity" Value="0.4" />
+                          </DataTrigger>
+                        </Style.Triggers>
+                      </Style>
+                    </Grid.Style>
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="26" />
                       <ColumnDefinition Width="Auto" />
@@ -243,7 +306,7 @@
               <Border Style="{StaticResource Row}">
                 <DockPanel>
                   <TextBlock Text="Target" Style="{StaticResource RowLabel}" Width="100" />
-                  <Button DockPanel.Dock="Right" Style="{StaticResource Icon}" Content="&#xE8B7;" Click="BrowseTarget_Click"
+                  <Button x:Name="BrowseButton" DockPanel.Dock="Right" Style="{StaticResource Icon}" Content="&#xE8B7;" Click="BrowseTarget_Click"
                           Width="28" Height="28" Margin="8,0,0,0" ToolTip="Browse" AutomationProperties.Name="Browse" />
                   <TextBox x:Name="TargetBox" Tag="target" Style="{StaticResource Inline}" LostFocus="Field_Changed"
                            ToolTip=".lnk, exe, versioned path (app-*\x.exe) or AUMID" />

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ManagedLauncher.Core;
@@ -23,6 +24,7 @@ public sealed class KeyController
     public const string LaunchAction = "com.fulgan.managedapplauncher.launch";
     public const string OpenAction = "com.fulgan.managedapplauncher.open";
     public const string ManageAction = "com.fulgan.managedapplauncher.manage";
+    public const string AutoAction = "com.fulgan.managedapplauncher.auto";
     private static readonly DeviceSize DefaultSize = new(5, 3);
 
     private readonly IStreamDeck deck;
@@ -40,7 +42,133 @@ public sealed class KeyController
     private readonly ConcurrentDictionary<string, bool> openedFromProfile = new();
     private readonly ConcurrentDictionary<string, bool> connected = new();
     private readonly ConcurrentDictionary<string, string> appliedDecks = new();
+
+    /// <summary>
+    /// Folders and links opened on each device, innermost last; each frame remembers the page its parent was on.
+    /// Empty means the device shows its root list.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ImmutableList<Frame>> folders = new();
     private readonly AppRuntime runtime;
+
+    /// <summary>Most folders and links open at once on one device; guards against link chains that never end.</summary>
+    internal const int MaxOpenFolders = 32;
+
+    private sealed record Frame(string List, int ParentPage);
+
+    /// <summary>Items of auto-folders (and folders generated in them) as last generated, by list id.</summary>
+    private readonly ConcurrentDictionary<string, IReadOnlyList<Entry>> generated = new();
+
+    /// <summary>Where auto-folders read installed and running apps from.</summary>
+    public IAppSources Sources { get; set; } = new SystemAppSources();
+
+    /// <summary>Runs an auto-folder generation; the plugin moves it to its STA thread, since shell enumeration needs one.</summary>
+    public Func<Func<IReadOnlyList<Entry>>, Task<IReadOnlyList<Entry>>> RunGeneration { get; set; } = work => Task.Run(work);
+
+    /// <summary>The items a list shows: stored items, or for an auto-folder the items generated when it was opened.</summary>
+    internal IReadOnlyList<Entry> ItemsOf(string list) =>
+        IsAuto(list) ? generated.GetValueOrDefault(list, []) : config().GetList(list);
+
+    /// <summary>
+    /// Lists defined by Auto List keys instead of the config, by id (<c>~</c> + hash of the key's source settings);
+    /// folders generated in them use the usual <c>id/relative path</c> ids.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, StoredList> keyLists = new();
+
+    private StoredList? KeyListOf(string list) => keyLists.GetValueOrDefault(AutoFolders.Split(list).ListId);
+
+    /// <summary>Whether the list's items are generated: an auto-folder, an Auto List key's list, or a folder generated in either.</summary>
+    private bool IsAuto(string list) => KeyListOf(list) is not null || config().IsDynamic(list);
+
+    private bool ListExists(string list) => KeyListOf(list) is not null || config().Exists(list);
+
+    private Navigation NavigationOf(string list) => KeyListOf(list)?.Options?.Navigation ?? config().NavigationOf(list);
+
+    /// <summary>Auto List keys repeat Back on every page unless their <c>backEveryPage</c> setting is false.</summary>
+    private bool BackOnEveryPage(string list) =>
+        KeyListOf(list) is { } keyList ? keyList.Options?.BackOnEveryPage ?? true : config().BackOnEveryPageOf(list);
+
+    private ListOptions OptionsOf(string list) => KeyListOf(list) is not null ? new ListOptions() : config().OptionsOf(list);
+
+    private SourceType? SourceTypeOf(string list) => (KeyListOf(list)?.Source ?? config().SourceOf(list))?.Type;
+
+    private async Task GenerateAsync(string list)
+    {
+        var cfg = config();
+        var keyList = KeyListOf(list);
+        var sources = Sources;
+        var items = await RunGeneration(() => keyList is null ? cfg.Generate(list, sources) : GenerateKeyList(keyList, list, sources)).ConfigureAwait(false);
+        generated[list] = items;
+    }
+
+    /// <summary>An Auto List key's list is a top-level list: depth 1, nested folders within the default depth limit.</summary>
+    private static IReadOnlyList<Entry> GenerateKeyList(StoredList keyList, string list, IAppSources sources)
+    {
+        var (root, nested) = AutoFolders.Split(list);
+        var depth = 1 + (nested.Length == 0 ? 0 : nested.Count(c => c == '\\') + 1);
+        return AutoFolders.Generate(keyList, root, nested, Math.Max(0, AppConfig.DefaultMaxDepth - depth), sources);
+    }
+
+    /// <summary>
+    /// The list an Auto List key's settings describe: <c>source</c>, <c>path</c>, <c>types</c> (comma separated),
+    /// <c>backEveryPage</c> (default true) and <c>navigation</c> (default arrows, since sources can give many pages).
+    /// </summary>
+    internal static (string Id, StoredList List) KeyListFor(Key key)
+    {
+        string? Text(string name) =>
+            key.Settings is { ValueKind: JsonValueKind.Object } s && s.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(v.GetString()) ? v.GetString()!.Trim() : null;
+        var type = Enum.TryParse<SourceType>(Text("source"), ignoreCase: true, out var parsed) ? parsed : SourceType.Steam;
+        var source = new ListSource { Type = type };
+        if (type == SourceType.Directory)
+        {
+            source.Path = Text("path");
+            source.Types = Text("types")?.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
+        }
+        var signature = $"{type}|{source.Path}|{string.Join(",", source.Types ?? [])}".ToLowerInvariant();
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature)), 0, 4).ToLowerInvariant();
+        var everyPage = Text("backEveryPage") != "false";
+        var navigation = Enum.TryParse<Navigation>(Text("navigation"), ignoreCase: true, out var chosen) ? chosen : Navigation.Arrows;
+        return ("~" + hash[1..], new StoredList
+        {
+            Kind = ListKind.Dynamic,
+            Name = AutoFolders.Describe(source),
+            Source = source,
+            Options = new ListOptions { BackOnEveryPage = everyPage, Navigation = navigation, Theme = KeyColorOf(key) ?? KeyTheme.Grey },
+        });
+    }
+
+    /// <summary>Lists some visible launcher key shows right now: opened folders, root lists and keys' own lists.</summary>
+    private IEnumerable<string> ShownLists() =>
+        keys.Values.Where(k => k.Action == SlotAction).Select(ListOf).Distinct().ToList();
+
+    /// <summary>Generates an auto-folder that is about to be shown and has no items generated yet.</summary>
+    private async Task EnsureGeneratedAsync(string list)
+    {
+        if (IsAuto(list) && !generated.ContainsKey(list))
+            await GenerateAsync(list).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Regenerates shown auto-folders whose source is running programs and repaints the devices showing them when
+    /// their items changed; does nothing while none is shown.
+    /// </summary>
+    public async Task RefreshRunningFoldersAsync()
+    {
+        var cfg = config();
+        foreach (var list in ShownLists().Where(l => IsAuto(l) && SourceTypeOf(l) == SourceType.Running).ToList())
+        {
+            var before = string.Join("|", ItemsOf(list).Select(e => e.Target));
+            await GenerateAsync(list).ConfigureAwait(false);
+            if (before == string.Join("|", ItemsOf(list).Select(e => e.Target)))
+                continue;
+            foreach (var key in keys.Values.Where(k => k.Action == SlotAction && ListOf(k) == list).GroupBy(k => k.Device ?? "").Select(g => g.First()).ToList())
+            {
+                var device = key.Device ?? "";
+                pages[device] = LayoutFor(key).Clamp(PageOf(device));
+                await RefreshDeviceAsync(device).ConfigureAwait(false);
+            }
+        }
+    }
 
     public KeyController(
         IStreamDeck deck, Func<AppConfig> config, ProcessTracker tracker, PressTimer timer,
@@ -128,19 +256,43 @@ public sealed class KeyController
 
     public int PageOf(string device) => pages.GetValueOrDefault(device);
 
-    /// <summary>The key's own list, else the list an Open key chose, else the deck's dedicated list, else <c>default</c>.</summary>
+    /// <summary>
+    /// Id of the list the key shows: its own list, else the innermost folder opened on its device, else the device's
+    /// root list.
+    /// </summary>
     public string ListOf(Key key)
     {
-        var device = key.Device ?? "";
-        return key.ListSetting ?? deviceLists.GetValueOrDefault(device) ?? config().Decks.GetValueOrDefault(device) ?? AppConfig.DefaultListName;
+        if (key.ListSetting is { } own)
+            return config().ResolveList(own);
+        return folders.TryGetValue(key.Device ?? "", out var open) && open.Count > 0 ? open[^1].List : RootOf(key.Device ?? "");
     }
 
-    /// <summary>Back is the first key of the first page, only while the launcher was entered through an Open Launcher key.</summary>
-    private LauncherLayout LayoutFor(string? device, string list)
+    /// <summary>The list an Open key chose, else the deck's dedicated list, else the home list.</summary>
+    private string RootOf(string device)
     {
-        var size = devices.GetValueOrDefault(device ?? "", DefaultSize);
-        return new LauncherLayout(size.Keys, size.Columns, config().LayoutOf(list), openedFromProfile.GetValueOrDefault(device ?? ""));
+        var cfg = config();
+        var root = cfg.ResolveList(deviceLists.GetValueOrDefault(device) ?? cfg.Decks.GetValueOrDefault(device));
+        return cfg.Store.ContainsKey(root) || keyLists.ContainsKey(root) ? root : cfg.HomeList;
     }
+
+    /// <summary>Whether the key follows its device into an opened folder.</summary>
+    private bool InFolder(Key key) =>
+        key.ListSetting is null && folders.TryGetValue(key.Device ?? "", out var open) && open.Count > 0;
+
+    /// <summary>
+    /// Inside an opened folder the first key of the first page is Up; at the root it is Back, only while the launcher
+    /// was entered through an Open Launcher key.
+    /// </summary>
+    private LauncherLayout LayoutFor(Key key)
+    {
+        var device = key.Device ?? "";
+        var size = devices.GetValueOrDefault(device, DefaultSize);
+        var up = InFolder(key);
+        var list = ListOf(key);
+        return new LauncherLayout(size.Keys, size.Columns, ItemsOf(list).Select(e => e.LayoutKind).ToList(),
+            up || openedFromProfile.GetValueOrDefault(device), up ? KeyRole.Up : KeyRole.Back, NavigationOf(list), BackOnEveryPage(list));
+    }
+
 
     public async Task HandleAsync(StreamDeckEvent ev)
     {
@@ -172,7 +324,12 @@ public sealed class KeyController
                 var key = keys.AddOrUpdate(ev.Context, _ => Key.From(ev), (_, k) => k.Update(ev));
                 tracker.Subscribe(ev.Context, snapshot => StateOf(key, snapshot));
                 await FollowRenameAsync(key).ConfigureAwait(false);
-                Fire(() => RefreshAsync(ev.Context, force: true));
+                Fire(async () =>
+                {
+                    if (key.Action == SlotAction)
+                        await EnsureGeneratedAsync(ListOf(key)).ConfigureAwait(false);
+                    await RefreshAsync(ev.Context, force: true).ConfigureAwait(false);
+                });
                 break;
             case "willDisappear":
                 if (keys.TryRemove(ev.Context, out var gone) && gone.Action == SlotAction
@@ -180,6 +337,7 @@ public sealed class KeyController
                 {
                     openedFromProfile[gone.Device ?? ""] = false;
                     deviceLists.TryRemove(gone.Device ?? "", out _);
+                    folders.TryRemove(gone.Device ?? "", out _);
                 }
                 tracker.Unsubscribe(ev.Context);
                 timer.Cancel(ev.Context);
@@ -233,22 +391,43 @@ public sealed class KeyController
 
     public async Task OnConfigChangedAsync()
     {
+        CloseRemovedFolders();
+        foreach (var list in generated.Keys.Except(ShownLists()).ToList())
+            generated.TryRemove(list, out _);
+        await Task.WhenAll(ShownLists().Where(IsAuto).Select(GenerateAsync)).ConfigureAwait(false);
         await ApplyDecksAsync().ConfigureAwait(false);
         await Task.WhenAll(keys.Values.Select(FollowRenameAsync)).ConfigureAwait(false);
         await Task.WhenAll(keys.Keys.Select(c => RefreshAsync(c, force: true))).ConfigureAwait(false);
     }
 
-    /// <summary>Points a key's List setting at the list's current name when the list it names was renamed.</summary>
+    /// <summary>Leaves opened folders whose list no longer exists, back to the page their parent was on.</summary>
+    private void CloseRemovedFolders()
+    {
+        var cfg = config();
+        foreach (var (device, open) in folders)
+        {
+            var kept = open;
+            while (kept.Count > 0 && !ListExists(kept[^1].List))
+            {
+                pages[device] = kept[^1].ParentPage;
+                kept = kept.RemoveAt(kept.Count - 1);
+            }
+            if (kept != open)
+                folders[device] = kept;
+        }
+    }
+
+    /// <summary>Points a key's List setting at the list's id when it still carries a list name.</summary>
     private async Task FollowRenameAsync(Key key)
     {
         var cfg = config();
-        if (key.ListSetting is not { } list || cfg.Lists.ContainsKey(list))
+        if (key.ListSetting is not { } list)
             return;
-        var current = cfg.ResolveList(list);
-        if (!cfg.Lists.ContainsKey(current))
+        var id = cfg.ResolveList(list);
+        if (id == list || !cfg.Store.ContainsKey(id))
             return;
-        log($"{key.Describe()}: list {list} renamed to {current}");
-        await deck.SetSettingsAsync(key.Context, key.WithList(current)).ConfigureAwait(false);
+        log($"{key.Describe()}: list {list} is {cfg.NameOf(id)} ({id})");
+        await deck.SetSettingsAsync(key.Context, key.WithList(id)).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -278,9 +457,11 @@ public sealed class KeyController
             return;
         }
         deviceLists.TryRemove(device, out _);
+        folders.TryRemove(device, out _);
         openedFromProfile[device] = false;
         pages[device] = 0;
-        log($"device {device}: dedicated to list {list}");
+        log($"device {device}: dedicated to list {config().NameOf(list)}");
+        await EnsureGeneratedAsync(config().ResolveList(list)).ConfigureAwait(false);
         await deck.SwitchToProfileAsync(PluginContext, device, profile).ConfigureAwait(false);
         await RefreshDeviceAsync(device).ConfigureAwait(false);
     }
@@ -290,23 +471,29 @@ public sealed class KeyController
     {
         if (key.Action != SlotAction)
             return new KeyAssignment(KeyRole.App, -1, 0, 1);
-        var list = ListOf(key);
         if (key.FixedSlot is { } slot)
-            return config().GetApp(list, slot) is not null ? new KeyAssignment(KeyRole.App, slot, 0, 1) : new KeyAssignment(KeyRole.Empty, -1, 0, 1);
+            return ItemsOf(ListOf(key)) is var fixedItems && slot < fixedItems.Count && !fixedItems[slot].IsBreak ? new KeyAssignment(KeyRole.App, slot, 0, 1) : new KeyAssignment(KeyRole.Empty, -1, 0, 1);
 
         var size = devices.GetValueOrDefault(key.Device ?? "", DefaultSize);
         if (key.Column is not { } col || key.Row is not { } row)
             return new KeyAssignment(KeyRole.Empty, -1, 0, 1);
-        return LayoutFor(key.Device, list).Assign(col + row * size.Columns, PageOf(key.Device ?? ""));
+        return LayoutFor(key).Assign(col + row * size.Columns, PageOf(key.Device ?? ""));
+    }
+
+    /// <summary>The list item a slot key shows: an app, folder or link; null for control and empty keys.</summary>
+    internal Entry? ItemFor(Key key)
+    {
+        if (key.Action != SlotAction)
+            return null;
+        var assignment = AssignmentFor(key);
+        var items = ItemsOf(ListOf(key));
+        return assignment.Role == KeyRole.App && assignment.AppIndex >= 0 && assignment.AppIndex < items.Count ? items[assignment.AppIndex] : null;
     }
 
     public Entry? EntryFor(Key key)
     {
         if (key.Action == SlotAction)
-        {
-            var assignment = AssignmentFor(key);
-            return assignment.Role == KeyRole.App ? config().GetApp(ListOf(key), assignment.AppIndex) : null;
-        }
+            return ItemFor(key) is { IsApp: true } app ? app : null;
 
         if (key.Settings is not { ValueKind: JsonValueKind.Object } settings)
             return null;
@@ -325,6 +512,11 @@ public sealed class KeyController
             timer.KeyDown(key.Context, threshold, () => Fire(() => OpenLauncherAsync(key)), null);
             return;
         }
+        if (key.Action == AutoAction)
+        {
+            timer.KeyDown(key.Context, threshold, () => Fire(() => OpenAutoListAsync(key)), null);
+            return;
+        }
         if (key.Action == ManageAction)
         {
             timer.KeyDown(key.Context, threshold, () => Fire(() => ManageAsync(key)), null);
@@ -338,16 +530,28 @@ public sealed class KeyController
             timer.KeyDown(key.Context, threshold, () => Fire(() => GoBackAsync(key)), null);
             return;
         }
+        if (role == KeyRole.Up)
+        {
+            timer.KeyDown(key.Context, threshold, () => Fire(() => GoUpAsync(key)), null);
+            return;
+        }
+        if (ItemFor(key) is { Opens: not null } folder)
+        {
+            timer.KeyDown(key.Context, threshold, () => Fire(() => OpenFolderAsync(key, folder)), null);
+            return;
+        }
         if (role == KeyRole.Manage)
         {
             timer.KeyDown(key.Context, threshold, () => Fire(() => ManageAsync(key)), null);
             return;
         }
-        if (role == KeyRole.NextPage)
+        if (role is KeyRole.NextPage or KeyRole.PreviousPage)
         {
+            var direction = role == KeyRole.NextPage ? +1 : -1;
+            var arrows = LayoutFor(key).HasArrows;
             timer.KeyDown(key.Context, threshold,
-                () => Fire(() => TurnPageAsync(key, +1)),
-                key.IsInMultiAction ? null : () => Fire(() => TurnPageAsync(key, -1)));
+                () => Fire(() => TurnPageAsync(key, direction)),
+                key.IsInMultiAction ? null : () => Fire(() => TurnPageAsync(key, arrows ? direction * int.MaxValue / 2 : -1)));
             return;
         }
 
@@ -364,8 +568,8 @@ public sealed class KeyController
     internal async Task TurnPageAsync(Key key, int delta)
     {
         var device = key.Device ?? "";
-        var layout = LayoutFor(device, ListOf(key));
-        var page = layout.Step(PageOf(device), delta);
+        var layout = LayoutFor(key);
+        var page = layout.HasArrows ? layout.Advance(PageOf(device), delta) : layout.Step(PageOf(device), delta);
         pages[device] = page;
         log($"device {device}: page {page + 1}/{layout.PageCount}");
         await RefreshDeviceAsync(device).ConfigureAwait(false);
@@ -375,7 +579,17 @@ public sealed class KeyController
         Task.WhenAll(keys.Values.Where(k => k.Device == device).Select(k => RefreshAsync(k.Context, force: false)));
 
     /// <summary>Shows the bundled launcher profile on this device with the key's list, starting at its first page.</summary>
-    internal async Task OpenLauncherAsync(Key key)
+    internal Task OpenLauncherAsync(Key key) => OpenRootAsync(key, config().ResolveList(key.ListSetting));
+
+    /// <summary>Shows the launcher with the apps of the key's source, read now.</summary>
+    internal Task OpenAutoListAsync(Key key)
+    {
+        var (id, list) = KeyListFor(key);
+        keyLists[id] = list;
+        return OpenRootAsync(key, id);
+    }
+
+    private async Task OpenRootAsync(Key key, string list)
     {
         var device = key.Device ?? "";
         var size = devices.GetValueOrDefault(device, DefaultSize);
@@ -385,11 +599,13 @@ public sealed class KeyController
             await deck.ShowAlertAsync(key.Context).ConfigureAwait(false);
             return;
         }
-        var list = key.ListSetting ?? AppConfig.DefaultListName;
         deviceLists[device] = list;
+        folders.TryRemove(device, out _);
         pages[device] = 0;
         openedFromProfile[device] = true;
-        log($"device {device}: open launcher, list {list}");
+        log($"device {device}: open launcher, list {KeyListOf(list)?.Name ?? config().NameOf(list)}");
+        if (IsAuto(list))
+            await GenerateAsync(list).ConfigureAwait(false);
         await deck.SwitchToProfileAsync(PluginContext, device, profile).ConfigureAwait(false);
         await RefreshDeviceAsync(device).ConfigureAwait(false);
     }
@@ -399,6 +615,41 @@ public sealed class KeyController
         var device = key.Device ?? "";
         openedFromProfile[device] = false;
         await deck.SwitchToProfileAsync(PluginContext, device, null).ConfigureAwait(false);
+    }
+
+    /// <summary>Shows the list a folder or link key opens on the key's device, from its first page.</summary>
+    internal async Task OpenFolderAsync(Key key, Entry item)
+    {
+        var cfg = config();
+        var device = key.Device ?? "";
+        var target = item.Opens!;
+        var open = folders.GetValueOrDefault(device, []);
+        var problem = item.LinkProblem
+            ?? (!ListExists(target) ? "list removed" : open.Count >= MaxOpenFolders ? "too many folders open" : null);
+        if (problem is not null)
+        {
+            log($"{key.Describe()}: can't open {cfg.TitleOf(item)}: {problem}");
+            await deck.ShowAlertAsync(key.Context).ConfigureAwait(false);
+            return;
+        }
+        if (IsAuto(target))
+            await GenerateAsync(target).ConfigureAwait(false);
+        folders[device] = open.Add(new Frame(target, PageOf(device)));
+        pages[device] = 0;
+        log($"device {device}: open {cfg.PathOf(target)}");
+        await RefreshDeviceAsync(device).ConfigureAwait(false);
+    }
+
+    /// <summary>Leaves the innermost opened folder, back to the page its parent was on.</summary>
+    internal async Task GoUpAsync(Key key)
+    {
+        var device = key.Device ?? "";
+        if (!folders.TryGetValue(device, out var open) || open.Count == 0)
+            return;
+        folders[device] = open.RemoveAt(open.Count - 1);
+        pages[device] = open[^1].ParentPage;
+        log($"device {device}: up to {config().NameOf(folders[device].Count > 0 ? folders[device][^1].List : RootOf(device))}");
+        await RefreshDeviceAsync(device).ConfigureAwait(false);
     }
 
     internal async Task ManageAsync(Key key)
@@ -440,8 +691,13 @@ public sealed class KeyController
         }
 
         if (result.Success && LeavesLauncher(decision) && key.Action == SlotAction && key.FixedSlot is null
-            && cfg.OptionsOf(ListOf(key)).ReturnAfterLaunch)
-            await ReturnFromLauncherAsync(key).ConfigureAwait(false);
+            && OptionsOf(ListOf(key)).ReturnAfterLaunch)
+        {
+            if (InFolder(key))
+                await GoUpAsync(key).ConfigureAwait(false);
+            else
+                await ReturnFromLauncherAsync(key).ConfigureAwait(false);
+        }
 
         await Task.Delay(TimeSpan.FromMilliseconds(cfg.PollMs), time).ConfigureAwait(false);
         tracker.Refresh();
@@ -486,40 +742,77 @@ public sealed class KeyController
 
         if (key.Action == OpenAction)
         {
-            var list = config().ResolveList(key.ListSetting);
-            if (ListIconOf(key) is { } icon)
+            var cfg = config();
+            var listId = cfg.ResolveList(key.ListSetting);
+            var list = cfg.NameOf(listId);
+            var openTheme = KeyColorOf(key) ?? cfg.ThemeOf(listId);
+            var icon = ListIconOf(key);
+            if (icon is not null || openTheme != KeyTheme.Grey)
             {
-                var image = await images.OpenAsync(list, icon).ConfigureAwait(false);
-                await SetIfChangedAsync(key, null, null, ($"open {list}|{icon}", image), force).ConfigureAwait(false);
+                var image = await images.OpenAsync(list, icon, openTheme).ConfigureAwait(false);
+                await SetIfChangedAsync(key, null, null, ($"open {list}|{icon}|{openTheme}", image), force).ConfigureAwait(false);
             }
-            else if (key.LastLook is not null)
+            else
             {
-                await deck.SetImageAsync(key.Context, null).ConfigureAwait(false);
-                key.LastLook = null;
+                await ResetImageAsync(key).ConfigureAwait(false);
             }
             return;
         }
         if (key.Action == ManageAction)
         {
-            await SetIfChangedAsync(key, null, null, ("manage", images.Manage), force).ConfigureAwait(false);
+            await SetIfChangedAsync(key, null, null, ("manage", images.Manage(KeyTheme.Grey)), force).ConfigureAwait(false);
+            return;
+        }
+        if (key.Action == AutoAction)
+        {
+            if (KeyColorOf(key) is { } color and not KeyTheme.Grey)
+                await SetIfChangedAsync(key, null, null, ($"auto {color}", images.AutoList(color)), force).ConfigureAwait(false);
+            else
+                await ResetImageAsync(key).ConfigureAwait(false);
             return;
         }
 
+        var theme = ThemeOf(key);
         var assignment = AssignmentFor(key);
         if (assignment.Role == KeyRole.Back)
         {
-            await SetIfChangedAsync(key, null, null, ("back", images.Back), force).ConfigureAwait(false);
+            await SetIfChangedAsync(key, null, null, ($"back {theme}", images.Back(theme)), force).ConfigureAwait(false);
+            return;
+        }
+        if (assignment.Role == KeyRole.Up)
+        {
+            await SetIfChangedAsync(key, null, null, ($"up {theme}", images.Up(theme)), force).ConfigureAwait(false);
             return;
         }
         if (assignment.Role == KeyRole.Manage)
         {
-            await SetIfChangedAsync(key, null, null, ("manage", images.Manage), force).ConfigureAwait(false);
+            await SetIfChangedAsync(key, null, null, ($"manage {theme}", images.Manage(theme)), force).ConfigureAwait(false);
+            return;
+        }
+        if (ItemFor(key) is { Opens: { } opens } folder)
+        {
+            var cfg = config();
+            var name = cfg.TitleOf(folder);
+            if (folder.LinkProblem is not null)
+            {
+                await SetIfChangedAsync(key, null, null, ($"broken {name}|{theme}", images.BrokenLink(name, theme)), force).ConfigureAwait(false);
+                return;
+            }
+            var icon = !AutoFolders.IsNested(opens) && cfg.OptionsOf(opens).Icon is { Length: > 0 } custom ? TargetResolver.Expand(custom) : null;
+            var image = await images.FolderAsync(name, icon, folder.IsLink, theme).ConfigureAwait(false);
+            await SetIfChangedAsync(key, null, null, ($"folder {name}|{icon}|{folder.IsLink}|{theme}", image), force).ConfigureAwait(false);
+            return;
+        }
+        if (assignment.Role == KeyRole.PreviousPage)
+        {
+            await SetIfChangedAsync(key, null, null,
+                ($"previous-page {assignment.Page}/{assignment.Pages}|{theme}", images.PreviousPage(assignment.Page, assignment.Pages, theme)), force).ConfigureAwait(false);
             return;
         }
         if (assignment.Role == KeyRole.NextPage)
         {
             await SetIfChangedAsync(key, null, null,
-                ($"next-page {assignment.Page}/{assignment.Pages}", images.NextPage(assignment.Page, assignment.Pages)), force).ConfigureAwait(false);
+                ($"next-page {assignment.Page}/{assignment.Pages}|{theme}", images.NextPage(assignment.Page, assignment.Pages, theme)), force).ConfigureAwait(false);
             return;
         }
 
@@ -555,12 +848,33 @@ public sealed class KeyController
         }
     }
 
+    /// <summary>Tells an Auto List key's panel how many items its source gives right now.</summary>
+    private async Task SendAutoInfoAsync(Key key)
+    {
+        var (id, list) = KeyListFor(key);
+        var payload = new JsonObject { ["configPath"] = AppPaths.ConfigFile };
+        if (list.Source is { Type: SourceType.Directory } source && (source.Path is null || !Directory.Exists(TargetResolver.Expand(source.Path))))
+        {
+            payload["apps"] = 0;
+            payload["error"] = source.Path is null ? "choose a directory" : $"{source.Path} does not exist";
+        }
+        else
+        {
+            var sources = Sources;
+            payload["apps"] = (await RunGeneration(() => GenerateKeyList(list, id, sources)).ConfigureAwait(false)).Count;
+        }
+        await deck.SendToPropertyInspectorAsync(key.Action, key.Context, payload).ConfigureAwait(false);
+    }
+
     private Task SendInfoAsync(Key key)
     {
+        if (key.Action == AutoAction)
+            return SendAutoInfoAsync(key);
         var cfg = config();
         var entry = EntryFor(key);
         var target = entry is null ? null : TargetResolver.Resolve(entry);
         var assignment = AssignmentFor(key);
+        var item = ItemFor(key);
         var payload = new JsonObject
         {
             ["configPath"] = AppPaths.ConfigFile,
@@ -569,10 +883,24 @@ public sealed class KeyController
             ["role"] = assignment.Role.ToString().ToLowerInvariant(),
             ["page"] = assignment.Page + 1,
             ["pages"] = assignment.Pages,
-            ["apps"] = cfg.GetList(ListOf(key)).Count,
-            ["lists"] = new JsonArray(cfg.Lists.Keys.Order().Select(p => (JsonNode)p!).ToArray()),
+            ["apps"] = ItemsOf(ListOf(key)).Count,
+            ["lists"] = new JsonArray(cfg.Tree().Select(t => (JsonNode)new JsonObject
+            {
+                ["id"] = t.Id,
+                ["name"] = cfg.NameOf(t.Id),
+                ["depth"] = t.Depth,
+                ["auto"] = cfg.IsDynamic(t.Id),
+            }).ToArray()),
             ["homeList"] = cfg.HomeList,
+            ["homeName"] = cfg.NameOf(cfg.HomeList),
             ["list"] = ListOf(key),
+            ["listName"] = cfg.PathOf(ListOf(key)),
+            ["opens"] = item?.Opens is null ? null : new JsonObject
+            {
+                ["kind"] = item.IsFolder ? "folder" : "link",
+                ["name"] = cfg.PathOf(item.Opens),
+                ["problem"] = item.LinkProblem,
+            },
             ["entry"] = entry is null ? null : JsonSerializer.SerializeToNode(entry, ConfigStore.JsonOptions),
             ["resolved"] = target is null ? null : new JsonObject
             {
@@ -665,6 +993,27 @@ public sealed class KeyController
             await deck.SendToPropertyInspectorAsync(key.Action, key.Context, reply).ConfigureAwait(false);
             offset += chunk.Count;
         } while (offset < icons.Count);
+    }
+
+    /// <summary>Tile colour of the keys a slot key's list shows: an Auto List key's colour, else the list's theme.</summary>
+    private KeyTheme ThemeOf(Key key)
+    {
+        var list = ListOf(key);
+        return KeyListOf(list)?.Options?.Theme ?? config().ThemeOf(list);
+    }
+
+    /// <summary>The <c>color</c> setting of an Open Launcher or Auto List key; null when unset (default).</summary>
+    private static KeyTheme? KeyColorOf(Key key) =>
+        key.Settings is { ValueKind: JsonValueKind.Object } s && s.TryGetProperty("color", out var v) && v.ValueKind == JsonValueKind.String
+            && Enum.TryParse<KeyTheme>(v.GetString(), ignoreCase: true, out var theme) ? theme : null;
+
+    /// <summary>Gives the key back to Stream Deck's own image (the manifest's or the user's) after the plugin painted it.</summary>
+    private async Task ResetImageAsync(Key key)
+    {
+        if (key.LastLook is null)
+            return;
+        await deck.SetImageAsync(key.Context, null).ConfigureAwait(false);
+        key.LastLook = null;
     }
 
     private string? ListIconOf(Key key) =>

@@ -14,6 +14,15 @@
     </select>
   </div>
   <div class="row">
+    <label for="color">Key color</label>
+    <select id="color" data-key="color">
+      <option value="">default: the list's color</option>
+      <option value="grey">grey</option>
+      <option value="blue">blue</option>
+      <option value="red">red</option>
+    </select>
+  </div>
+  <div class="row">
     <label></label>
     <div class="with-button"><button id="manager" type="button">Manage apps…</button></div>
   </div>
@@ -24,9 +33,8 @@
     bindManagerButton("manager");
     onInfo = (info) => {
       const select = document.getElementById("list");
-      const home = (info.homeList || "default").toLowerCase();
-      select.querySelector("option[data-fixed]").textContent = info.homeList || "default";
-      fillPresets(select, (info.lists || []).filter((l) => l.toLowerCase() !== home));
+      select.querySelector("option[data-fixed]").textContent = info.homeName || "default";
+      fillPresets(select, (info.lists || []).filter((l) => l.id !== info.homeList && !l.auto));
       document.getElementById("info").innerHTML = `config: <code>${escapeHtml(info.configPath)}</code>`;
     };
   </script>
